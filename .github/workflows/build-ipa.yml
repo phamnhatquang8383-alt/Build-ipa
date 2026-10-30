@@ -1,0 +1,130 @@
+name: Build iOS IPA (SimpleTunnel)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      configuration:
+        description: 'Build Configuration'
+        required: true
+        default: 'Release'
+        type: choice
+        options:
+          - Release
+          - Debug
+      target_scheme:
+        description: 'Xcode Target to build'
+        required: true
+        default: 'SimpleTunnel'
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build-ipa:
+    name: Build & Package SimpleTunnel IPA
+    runs-on: macos-14
+    timeout-minutes: 25
+
+    steps:
+      - name: 1. Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 2. Setup Build Environment
+        run: |
+          echo "=== System Information ==="
+          sw_vers
+          xcodebuild -version
+          swift --version
+          
+          if [ -d "/Applications/Xcode_15.4.app" ]; then
+            sudo xcode-select -s /Applications/Xcode_15.4.app
+          fi
+          echo "Using Xcode at: $(xcode-select -p)"
+
+      - name: 3. Unpack Project Archive
+        run: |
+          echo "=== Locating Project Files ==="
+          if [ -f "SimpleTunnel-master.zip" ]; then
+            echo "Unzipping SimpleTunnel-master.zip..."
+            unzip -q -o SimpleTunnel-master.zip
+          fi
+          
+          PROJ_PATH=$(find . -name "*.xcodeproj" -maxdepth 2 | head -n 1)
+          if [ -z "$PROJ_PATH" ]; then
+            echo "❌ Error: Could not find .xcodeproj file!"
+            ls -la
+            exit 1
+          fi
+          
+          echo "✅ Found project at: $PROJ_PATH"
+          echo "PROJ_DIR=$(dirname "$PROJ_PATH")" >> $GITHUB_ENV
+          echo "PROJ_FILE=$(basename "$PROJ_PATH")" >> $GITHUB_ENV
+
+      - name: 4. Inspect Xcode Targets
+        run: |
+          cd "$PROJ_DIR"
+          echo "=== Xcode Project Targets & Configs ==="
+          xcodebuild -list -project "$PROJ_FILE"
+
+      - name: 5. Compile iOS Target
+        run: |
+          cd "$PROJ_DIR"
+          BUILD_OUTPUT="$(pwd)/build_output"
+          mkdir -p "$BUILD_OUTPUT"
+          
+          TARGET_NAME="${{ github.event.inputs.target_scheme || 'SimpleTunnel' }}"
+          BUILD_CONFIG="${{ github.event.inputs.configuration || 'Release' }}"
+          
+          echo "=== Building $TARGET_NAME in $BUILD_CONFIG configuration ==="
+          xcodebuild build \
+            -project "$PROJ_FILE" \
+            -target "$TARGET_NAME" \
+            -configuration "$BUILD_CONFIG" \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES \
+            CONFIGURATION_BUILD_DIR="$BUILD_OUTPUT" \
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES
+          
+          echo "=== Build Completed ==="
+          ls -la "$BUILD_OUTPUT"
+
+      - name: 6. Package App into IPA (Payload format)
+        run: |
+          cd "$PROJ_DIR"
+          BUILD_OUTPUT="$(pwd)/build_output"
+          PAYLOAD_DIR="$BUILD_OUTPUT/Payload"
+          EXPORT_DIR="$(pwd)/ipa_export"
+          mkdir -p "$PAYLOAD_DIR" "$EXPORT_DIR"
+          
+          APP_PATH=$(find "$BUILD_OUTPUT" -name "*.app" -maxdepth 1 | head -n 1)
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Error: No .app bundle was produced in $BUILD_OUTPUT"
+            ls -la "$BUILD_OUTPUT"
+            exit 1
+          fi
+          
+          APP_NAME=$(basename "$APP_PATH")
+          echo "Found compiled app bundle: $APP_NAME"
+          
+          cp -R "$APP_PATH" "$PAYLOAD_DIR/"
+          cd "$BUILD_OUTPUT"
+          zip -q -r -y "$EXPORT_DIR/SimpleTunnel.ipa" Payload
+          
+          echo "=== IPA Generated Successfully ==="
+          ls -lh "$EXPORT_DIR/SimpleTunnel.ipa"
+          echo "EXPORT_IPA_PATH=$EXPORT_DIR/SimpleTunnel.ipa" >> $GITHUB_ENV
+
+      - name: 7. Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SimpleTunnel-iOS-IPA
+          path: ${{ env.EXPORT_IPA_PATH }}
+          retention-days: 30
+          if-no-files-found: error
