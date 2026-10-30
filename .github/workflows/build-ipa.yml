@@ -1,22 +1,10 @@
-name: Build iOS IPA (SimpleTunnel)
+name: Build iOS IPA with NetworkExtension (SimpleTunnel)
 
 on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
     inputs:
-      bundle_id:
-        description: 'Custom Bundle Identifier (match your certificate)'
-        required: true
-        default: 'app.garlic2817.jaguar9702'
-      remove_plugins:
-        description: 'Remove PlugIns/Extensions (prevent install failure on single-app certs)'
-        required: true
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
       configuration:
         description: 'Build Configuration'
         required: true
@@ -32,7 +20,7 @@ permissions:
 
 jobs:
   build-ipa:
-    name: Build & Package SimpleTunnel IPA
+    name: Build SimpleTunnel with NetworkExtension
     runs-on: macos-latest
     timeout-minutes: 30
 
@@ -40,7 +28,7 @@ jobs:
       - name: 1. Checkout repository
         uses: actions/checkout@v4
 
-      - name: 2. Setup Build Environment & Xcode
+      - name: 2. Setup Build Environment
         run: |
           echo "=== System Information ==="
           sw_vers
@@ -58,7 +46,6 @@ jobs:
           PROJ_PATH=$(find . -name "*.xcodeproj" -maxdepth 2 | head -n 1)
           if [ -z "$PROJ_PATH" ]; then
             echo "❌ Error: Could not find .xcodeproj file!"
-            ls -la
             exit 1
           fi
           
@@ -66,19 +53,11 @@ jobs:
           echo "PROJ_DIR=$(dirname "$PROJ_PATH")" >> $GITHUB_ENV
           echo "PROJ_FILE=$(basename "$PROJ_PATH")" >> $GITHUB_ENV
 
-      - name: 4. Inspect Xcode Targets & Schemes
-        run: |
-          cd "$PROJ_DIR"
-          echo "=== Xcode Schemes ==="
-          xcodebuild -list -project "$PROJ_FILE"
-
-      - name: 5. Compile iOS Target (SimpleTunnel)
+      - name: 4. Compile SimpleTunnel & NetworkExtension
         run: |
           cd "$PROJ_DIR"
           
-          TARGET_BUNDLE_ID="${{ github.event.inputs.bundle_id || 'app.garlic2817.jaguar9702' }}"
-          echo "=== Building SimpleTunnel iOS App with Bundle ID: $TARGET_BUNDLE_ID ==="
-          
+          echo "=== Compiling SimpleTunnel with NetworkExtension targets ==="
           xcodebuild build \
             -project "$PROJ_FILE" \
             -scheme SimpleTunnel \
@@ -86,75 +65,59 @@ jobs:
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
-            PRODUCT_BUNDLE_IDENTIFIER="$TARGET_BUNDLE_ID" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_STYLE="Manual" \
-            DEVELOPMENT_TEAM="" \
+            DEVELOPMENT_TEAM="5T3A5P662G" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
             ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES \
             COMPILER_INDEX_STORE_ENABLE=NO
 
-      - name: 6. Package App into IPA (Payload format)
+      - name: 5. Package IPAs (Full NetworkExtension & Clean Standalone)
         run: |
           cd "$PROJ_DIR"
-          PAYLOAD_DIR="$(pwd)/Payload"
           EXPORT_DIR="$(pwd)/ipa_export"
-          mkdir -p "$PAYLOAD_DIR" "$EXPORT_DIR"
+          mkdir -p "$EXPORT_DIR"
           
-          # Locate .app bundle
           APP_PATH=$(find build -name "SimpleTunnel.app" -type d | head -n 1)
           if [ -z "$APP_PATH" ]; then
-            APP_PATH=$(find build -name "*.app" -type d | head -n 1)
-          fi
-          
-          if [ -z "$APP_PATH" ]; then
-            echo "❌ Error: No .app bundle found in build folder!"
-            find build -maxdepth 5
+            echo "❌ Error: No .app bundle found!"
             exit 1
           fi
           
-          echo "✅ Found compiled app bundle at: $APP_PATH"
-          cp -R "$APP_PATH" "$PAYLOAD_DIR/"
+          echo "✅ Found compiled app bundle: $APP_PATH"
           
-          TARGET_APP="$PAYLOAD_DIR/SimpleTunnel.app"
+          # 1. Package FULL version with NetworkExtension (PacketTunnel.appex)
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -q -r -y "$EXPORT_DIR/SimpleTunnel-With-NetworkExtension.ipa" Payload
+          echo "Packaged: SimpleTunnel-With-NetworkExtension.ipa ($(ls -lh "$EXPORT_DIR/SimpleTunnel-With-NetworkExtension.ipa" | awk '{print $5}'))"
           
-          # Check remove_plugins option
-          REMOVE_PLUGINS="${{ github.event.inputs.remove_plugins || 'true' }}"
-          if [ "$REMOVE_PLUGINS" = "true" ]; then
-            echo "Removing PlugIns directory to ensure compatibility with single-app certificate..."
-            rm -rf "$TARGET_APP/PlugIns"
-          fi
-          
-          # Ensure Info.plist has the matching Bundle ID
-          TARGET_BUNDLE_ID="${{ github.event.inputs.bundle_id || 'app.garlic2817.jaguar9702' }}"
-          echo "Updating CFBundleIdentifier in Info.plist to: $TARGET_BUNDLE_ID"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $TARGET_BUNDLE_ID" "$TARGET_APP/Info.plist" 2>/dev/null || \
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $TARGET_BUNDLE_ID" "$TARGET_APP/Info.plist" || true
-          
-          # Compress to IPA
-          zip -q -r -y "$EXPORT_DIR/SimpleTunnel.ipa" Payload
-          
-          echo "=== IPA Generated Successfully ==="
-          ls -lh "$EXPORT_DIR/SimpleTunnel.ipa"
-          echo "EXPORT_IPA_PATH=$EXPORT_DIR/SimpleTunnel.ipa" >> $GITHUB_ENV
+          # 2. Package STANDALONE version (without PlugIns)
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          rm -rf Payload/SimpleTunnel.app/PlugIns
+          zip -q -r -y "$EXPORT_DIR/SimpleTunnel-Standalone.ipa" Payload
+          echo "Packaged: SimpleTunnel-Standalone.ipa ($(ls -lh "$EXPORT_DIR/SimpleTunnel-Standalone.ipa" | awk '{print $5}'))"
 
-      - name: 7. Upload IPA Artifact
+      - name: 6. Upload IPA Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SimpleTunnel-iOS-IPA
-          path: ${{ env.PROJ_DIR }}/ipa_export/SimpleTunnel.ipa
+          name: SimpleTunnel-iOS-IPAs
+          path: ${{ env.PROJ_DIR }}/ipa_export/*.ipa
           retention-days: 30
           if-no-files-found: error
 
-      - name: 8. Create GitHub Release
+      - name: 7. Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="v1.1.${{ github.run_number }}"
+          cd "$PROJ_DIR"
+          TAG_NAME="v2.0.${{ github.run_number }}"
           echo "Creating release $TAG_NAME..."
-          gh release create "$TAG_NAME" "$EXPORT_IPA_PATH" \
-            --title "SimpleTunnel iOS IPA (Build #${{ github.run_number }} - Certificate Ready)" \
-            --notes "Pre-configured IPA with Bundle ID app.garlic2817.jaguar9702 and cleaned PlugIns for seamless ESign/SideStore/AltStore installation." || \
-          gh release upload "$TAG_NAME" "$EXPORT_IPA_PATH" --clobber || true
+          gh release create "$TAG_NAME" ipa_export/*.ipa \
+            --title "SimpleTunnel iOS (Build #${{ github.run_number }} - NetworkExtension Enabled)" \
+            --notes "Includes both SimpleTunnel-With-NetworkExtension.ipa (with PacketTunnel VPN Extension) and SimpleTunnel-Standalone.ipa. Entitlements and App Group configured for cert 5T3A5P662G (app.garlic2817.jaguar9702)." || true
