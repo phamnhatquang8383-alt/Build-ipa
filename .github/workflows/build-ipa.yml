@@ -13,10 +13,6 @@ on:
         options:
           - Release
           - Debug
-      target_scheme:
-        description: 'Xcode Target to build'
-        required: true
-        default: 'SimpleTunnel'
 
 permissions:
   contents: write
@@ -38,11 +34,6 @@ jobs:
           sw_vers
           xcodebuild -version
           swift --version
-          
-          if [ -d "/Applications/Xcode_15.4.app" ]; then
-            sudo xcode-select -s /Applications/Xcode_15.4.app
-          fi
-          echo "Using Xcode at: $(xcode-select -p)"
 
       - name: 3. Unpack Project Archive
         run: |
@@ -69,52 +60,52 @@ jobs:
           echo "=== Xcode Project Targets & Configs ==="
           xcodebuild -list -project "$PROJ_FILE"
 
-      - name: 5. Compile iOS Target
+      - name: 5. Compile iOS Target (SimpleTunnel)
         run: |
           cd "$PROJ_DIR"
-          BUILD_OUTPUT="$(pwd)/build_output"
-          mkdir -p "$BUILD_OUTPUT"
           
-          TARGET_NAME="${{ github.event.inputs.target_scheme || 'SimpleTunnel' }}"
-          BUILD_CONFIG="${{ github.event.inputs.configuration || 'Release' }}"
-          
-          echo "=== Building $TARGET_NAME in $BUILD_CONFIG configuration ==="
+          echo "=== Building SimpleTunnel iOS App without code signing ==="
           xcodebuild build \
             -project "$PROJ_FILE" \
-            -target "$TARGET_NAME" \
-            -configuration "$BUILD_CONFIG" \
+            -target SimpleTunnel \
+            -configuration ${{ github.event.inputs.configuration || 'Release' }} \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE="Manual" \
+            DEVELOPMENT_TEAM="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            CONFIGURATION_BUILD_DIR="$BUILD_OUTPUT" \
             ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES
           
           echo "=== Build Completed ==="
-          ls -la "$BUILD_OUTPUT"
+          find build -name "*.app" -type d
 
       - name: 6. Package App into IPA (Payload format)
         run: |
           cd "$PROJ_DIR"
-          BUILD_OUTPUT="$(pwd)/build_output"
-          PAYLOAD_DIR="$BUILD_OUTPUT/Payload"
+          PAYLOAD_DIR="$(pwd)/Payload"
           EXPORT_DIR="$(pwd)/ipa_export"
           mkdir -p "$PAYLOAD_DIR" "$EXPORT_DIR"
           
-          APP_PATH=$(find "$BUILD_OUTPUT" -name "*.app" -maxdepth 1 | head -n 1)
+          # Locate .app bundle
+          APP_PATH=$(find build -name "SimpleTunnel.app" -type d | head -n 1)
           if [ -z "$APP_PATH" ]; then
-            echo "❌ Error: No .app bundle was produced in $BUILD_OUTPUT"
-            ls -la "$BUILD_OUTPUT"
+            APP_PATH=$(find build -name "*.app" -type d | head -n 1)
+          fi
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ Error: No .app bundle found in build folder!"
+            find build -maxdepth 4
             exit 1
           fi
           
-          APP_NAME=$(basename "$APP_PATH")
-          echo "Found compiled app bundle: $APP_NAME"
-          
+          echo "Found compiled app bundle at: $APP_PATH"
           cp -R "$APP_PATH" "$PAYLOAD_DIR/"
-          cd "$BUILD_OUTPUT"
+          
+          # Compress to IPA
           zip -q -r -y "$EXPORT_DIR/SimpleTunnel.ipa" Payload
           
           echo "=== IPA Generated Successfully ==="
@@ -125,6 +116,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: SimpleTunnel-iOS-IPA
-          path: ${{ env.EXPORT_IPA_PATH }}
+          path: ${{ env.PROJ_DIR }}/ipa_export/SimpleTunnel.ipa
           retention-days: 30
           if-no-files-found: error
