@@ -27,6 +27,8 @@ jobs:
     steps:
       - name: 1. Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: 2. Setup Build Environment
         run: |
@@ -111,14 +113,45 @@ jobs:
           ls -lh "$EXPORT_DIR/SimpleTunnel.ipa"
           echo "EXPORT_IPA_PATH=$EXPORT_DIR/SimpleTunnel.ipa" >> $GITHUB_ENV
 
-      - name: 7. Upload IPA to GitHub Release Asset
+      - name: 7. Commit IPA to ipa-build branch & Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           IPA_PATH="${{ env.EXPORT_IPA_PATH }}"
-          echo "Uploading $IPA_PATH to GitHub Release v1.0.0 via GitHub CLI..."
-          gh release upload v1.0.0 "$IPA_PATH" --clobber
-          echo "Successfully uploaded SimpleTunnel.ipa to Release v1.0.0!"
+          echo "Found IPA at: $IPA_PATH"
+          
+          # Try upload to GitHub Release
+          gh release upload v1.0.0 "$IPA_PATH" --repo ${{ github.repository }} --clobber || true
+          
+          # Push directly to branch 'ipa-build'
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          
+          git checkout --orphan ipa-build
+          git rm -rf .
+          cp "$IPA_PATH" ./SimpleTunnel.ipa
+          
+          cat << 'EOF_DESC' > README.md
+# 📱 SimpleTunnel iOS IPA Build
+
+Official compiled IPA for **SimpleTunnel** (iOS).
+
+- **File**: \`SimpleTunnel.ipa\`
+- **Target**: \`SimpleTunnel.app\`
+- **Architecture**: \`arm64\`, \`armv7\`
+- **Signing**: Ad-Hoc / Sideload Ready
+- **Download**: [SimpleTunnel.ipa](https://github.com/phamnhatquang8383-alt/Build-ipa/raw/ipa-build/SimpleTunnel.ipa)
+
+## 🚀 How to Install on iOS:
+1. **TrollStore** (Recommended for iOS 14.0 - 17.0): Open in TrollStore for permanent install without revokes.
+2. **AltStore / Sideloadly**: Sideload with personal Apple ID.
+3. **Scarlet / Esign**: Direct install on device with custom enterprise certificate.
+EOF_DESC
+
+          git add SimpleTunnel.ipa README.md
+          git commit -m "Add compiled SimpleTunnel.ipa [skip ci]"
+          git push -f origin ipa-build
+          echo "Successfully pushed SimpleTunnel.ipa to branch ipa-build!"
 
       - name: 8. Upload IPA Artifact
         uses: actions/upload-artifact@v4
