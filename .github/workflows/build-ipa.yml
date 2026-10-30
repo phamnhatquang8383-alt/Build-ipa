@@ -21,19 +21,21 @@ permissions:
 jobs:
   build-ipa:
     name: Build & Package SimpleTunnel IPA
-    runs-on: macos-14
-    timeout-minutes: 25
+    runs-on: macos-latest
+    timeout-minutes: 30
 
     steps:
       - name: 1. Checkout repository
         uses: actions/checkout@v4
 
-      - name: 2. Setup Build Environment
+      - name: 2. Setup Build Environment & Xcode
         run: |
           echo "=== System Information ==="
           sw_vers
           xcodebuild -version
           swift --version
+          echo "Available Xcode installations:"
+          ls -d /Applications/Xcode* || true
 
       - name: 3. Unpack Project Archive
         run: |
@@ -119,3 +121,14 @@ jobs:
           path: ${{ env.PROJ_DIR }}/ipa_export/SimpleTunnel.ipa
           retention-days: 30
           if-no-files-found: error
+
+      - name: 8. Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG_NAME="v1.0.${{ github.run_number }}"
+          echo "Creating release $TAG_NAME..."
+          gh release create "$TAG_NAME" "$EXPORT_IPA_PATH" \
+            --title "SimpleTunnel iOS IPA (Build #${{ github.run_number }})" \
+            --notes "Automated IPA build for iOS devices. Ready for AltStore, Sideloadly, TrollStore, or custom signing." || \
+          gh release upload "$TAG_NAME" "$EXPORT_IPA_PATH" --clobber || true
