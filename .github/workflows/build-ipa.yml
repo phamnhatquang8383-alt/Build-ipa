@@ -34,8 +34,6 @@ jobs:
           sw_vers
           xcodebuild -version
           swift --version
-          echo "Available Xcode installations:"
-          ls -d /Applications/Xcode* || true
 
       - name: 3. Unpack Project Archive
         run: |
@@ -56,20 +54,20 @@ jobs:
           echo "PROJ_DIR=$(dirname "$PROJ_PATH")" >> $GITHUB_ENV
           echo "PROJ_FILE=$(basename "$PROJ_PATH")" >> $GITHUB_ENV
 
-      - name: 4. Inspect Xcode Targets
+      - name: 4. Inspect Xcode Targets & Schemes
         run: |
           cd "$PROJ_DIR"
-          echo "=== Xcode Project Targets & Configs ==="
+          echo "=== Xcode Schemes ==="
           xcodebuild -list -project "$PROJ_FILE"
 
       - name: 5. Compile iOS Target (SimpleTunnel)
         run: |
           cd "$PROJ_DIR"
           
-          echo "=== Building SimpleTunnel iOS App without code signing ==="
+          echo "=== Building SimpleTunnel iOS App with -scheme SimpleTunnel ==="
           xcodebuild build \
             -project "$PROJ_FILE" \
-            -target SimpleTunnel \
+            -scheme SimpleTunnel \
             -configuration ${{ github.event.inputs.configuration || 'Release' }} \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
@@ -80,9 +78,10 @@ jobs:
             CODE_SIGN_STYLE="Manual" \
             DEVELOPMENT_TEAM="" \
             AD_HOC_CODE_SIGNING_ALLOWED=YES \
-            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES
+            ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES \
+            COMPILER_INDEX_STORE_ENABLE=NO
           
-          echo "=== Build Completed ==="
+          echo "=== Build Output Search ==="
           find build -name "*.app" -type d
 
       - name: 6. Package App into IPA (Payload format)
@@ -100,11 +99,11 @@ jobs:
           
           if [ -z "$APP_PATH" ]; then
             echo "❌ Error: No .app bundle found in build folder!"
-            find build -maxdepth 4
+            find build -maxdepth 5
             exit 1
           fi
           
-          echo "Found compiled app bundle at: $APP_PATH"
+          echo "✅ Found compiled app bundle at: $APP_PATH"
           cp -R "$APP_PATH" "$PAYLOAD_DIR/"
           
           # Compress to IPA
