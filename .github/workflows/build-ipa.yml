@@ -111,27 +111,19 @@ jobs:
           ls -lh "$EXPORT_DIR/SimpleTunnel.ipa"
           echo "EXPORT_IPA_PATH=$EXPORT_DIR/SimpleTunnel.ipa" >> $GITHUB_ENV
 
-      - name: 7. Upload IPA Artifact
+      - name: 7. Upload IPA to GitHub Release Asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IPA_PATH="${{ env.EXPORT_IPA_PATH }}"
+          echo "Uploading $IPA_PATH to GitHub Release v1.0.0 via GitHub CLI..."
+          gh release upload v1.0.0 "$IPA_PATH" --clobber
+          echo "Successfully uploaded SimpleTunnel.ipa to Release v1.0.0!"
+
+      - name: 8. Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SimpleTunnel-iOS-IPA
-          path: ${{ env.PROJ_DIR }}/ipa_export/SimpleTunnel.ipa
+          path: ${{ env.EXPORT_IPA_PATH }}
           retention-days: 30
           if-no-files-found: error
-
-      - name: 8. Publish GitHub Release with IPA
-        uses: softprops/action-gh-release@v2
-        if: success()
-        with:
-          tag_name: v1.0.0-build.${{ github.run_number }}
-          name: "SimpleTunnel iOS IPA (Build #${{ github.run_number }})"
-          body: |
-            ## 📱 SimpleTunnel iOS IPA Build
-            - **Status**: ✅ Success
-            - **Target**: SimpleTunnel.app
-            - **Build ID**: #${{ github.run_number }}
-            - **Commit**: `${{ github.sha }}`
-            - **Tương thích**: TrollStore, AltStore, Sideloadly, Scarlet, Esign.
-          files: ${{ env.PROJ_DIR }}/ipa_export/SimpleTunnel.ipa
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
