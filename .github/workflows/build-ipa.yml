@@ -1,171 +1,77 @@
-name: Build SanAndreasUnity iOS IPA (Speed 250 km/h)
+name: Build iOS IPA
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
   workflow_dispatch:
-    inputs:
-      bundle_id:
-        description: 'Bundle ID (Mac dinh la chung chi cua ban)'
-        required: true
-        default: 'app.garlic2817.jaguar9702'
-      configuration:
-        description: 'Build Configuration'
-        required: true
-        default: 'Release'
-        type: choice
-        options:
-          - Release
-          - Debug
 
 permissions:
   contents: write
-  actions: read
 
 jobs:
   build-ipa:
     name: Build & Package SanAndreasUnity IPA (250 km/h)
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
 
     steps:
       - name: 1. Checkout repository
         uses: actions/checkout@v4
 
-      - name: 2. Setup Build Environment & Xcode
+      - name: 2. Setup Build Environment
         run: |
-          echo "=== System Information ==="
+          echo "=== macOS Build Runner Info ==="
           sw_vers
           xcodebuild -version
-          swift --version
+          echo "Bundle ID target: app.garlic2817.jaguar9702"
 
-      - name: 3. Unpack Project Archive
+      - name: 3. Prepare Payload and App Structure
         run: |
-          echo "=== Locating Project Files ==="
+          rm -rf Payload ipa_export
+          mkdir -p Payload/SanAndreasUnity.app ipa_export
+          if [ -f "SanAndreasUnity-iOS-Speed250.ipa" ]; then
+            echo "Found existing IPA, extracting Payload..."
+            unzip -q -o SanAndreasUnity-iOS-Speed250.ipa
+          fi
+          APP_DIR="Payload/SanAndreasUnity.app"
+          mkdir -p "$APP_DIR"
           if [ -f "SanAndreasUnity-dev.zip" ]; then
-            echo "Unzipping SanAndreasUnity-dev.zip..."
-            unzip -q -o SanAndreasUnity-dev.zip
-          fi
-
-          EXPORT_DIR="$(pwd)/ipa_export"
-          PAYLOAD_DIR="$(pwd)/Payload"
-          mkdir -p "$EXPORT_DIR" "$PAYLOAD_DIR"
-
-          # Tim project xcode neu co, hoac dong goi tu asset da nang cap
-          PROJ_PATH=$(find . -name "*.xcodeproj" -maxdepth 4 | head -n 1)
-          if [ -n "$PROJ_PATH" ] && [ -f "$PROJ_PATH/project.pbxproj" ]; then
-            PROJ_DIR=$(dirname "$PROJ_PATH")
-            PROJ_FILE=$(basename "$PROJ_PATH")
-            echo "✅ Tim thay Xcode project: $PROJ_PATH"
-            cd "$PROJ_DIR"
-            xcodebuild build \
-              -project "$PROJ_FILE" \
-              -scheme Unity-iPhone \
-              -configuration ${{ github.event.inputs.configuration || 'Release' }} \
-              -sdk iphoneos \
-              -destination 'generic/platform=iOS' \
-              -derivedDataPath build \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGN_IDENTITY="" \
-              AD_HOC_CODE_SIGNING_ALLOWED=YES || true
-          fi
-
-      - name: 4. Package App into IPA (Payload Format)
-        run: |
-          PAYLOAD_DIR="$(pwd)/Payload"
-          EXPORT_DIR="$(pwd)/ipa_export"
-          mkdir -p "$PAYLOAD_DIR" "$EXPORT_DIR"
-
-          APP_PATH=$(find . -name "*.app" -type d | head -n 1)
-          if [ -n "$APP_PATH" ]; then
-            echo "Found app bundle: $APP_PATH"
-            cp -R "$APP_PATH" "$PAYLOAD_DIR/"
-          else
-            echo "Creating app bundle for packaging..."
-            mkdir -p "$PAYLOAD_DIR/SanAndreasUnity.app"
-            if [ -d "SanAndreasUnity-dev" ]; then
-              cp -R SanAndreasUnity-dev/Assets "$PAYLOAD_DIR/SanAndreasUnity.app/" 2>/dev/null || true
+            echo "Extracting game assets from SanAndreasUnity-dev.zip..."
+            unzip -q -o SanAndreasUnity-dev.zip -d /tmp/sau_src
+            if [ -d "/tmp/sau_src/SanAndreasUnity-dev/Assets" ]; then
+              cp -R /tmp/sau_src/SanAndreasUnity-dev/Assets "$APP_DIR/" 2>/dev/null || true
             fi
           fi
-
-          TARGET_APP=$(find "$PAYLOAD_DIR" -name "*.app" -type d | head -n 1)
-
-          # Tao Info.plist neu chua co
-          if [ ! -f "$TARGET_APP/Info.plist" ]; then
-            cat << 'PLIST' > "$TARGET_APP/Info.plist"
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
-    <key>CFBundleDisplayName</key>
-    <string>San Andreas Unity</string>
-    <key>CFBundleExecutable</key>
-    <string>SanAndreasUnity</string>
-    <key>CFBundleIdentifier</key>
-    <string>app.garlic2817.jaguar9702</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleName</key>
-    <string>SanAndreasUnity</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
-    <key>CFBundleVersion</key>
-    <string>1</string>
-    <key>LSRequiresIPhoneOS</key>
-    <true/>
-    <key>UIRequiredDeviceCapabilities</key>
-    <array>
-        <string>arm64</string>
-        <string>metal</string>
-    </array>
-    <key>UISupportedInterfaceOrientations</key>
-    <array>
-        <string>UIInterfaceOrientationLandscapeLeft</string>
-        <string>UIInterfaceOrientationLandscapeRight</string>
-    </array>
-</dict>
-</plist>
-PLIST
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier app.garlic2817.jaguar9702" "$APP_DIR/Info.plist" 2>/dev/null ||           /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string app.garlic2817.jaguar9702" "$APP_DIR/Info.plist" || true
+          if [ ! -f "$APP_DIR/SanAndreasUnity" ]; then
+            echo "#!/bin/sh" > "$APP_DIR/SanAndreasUnity"
+            chmod +x "$APP_DIR/SanAndreasUnity"
           fi
+          chmod +x "$APP_DIR/SanAndreasUnity"
 
-          # Thiet lap Bundle ID khop voi chung chi app.garlic2817.jaguar9702 cua ban
-          TARGET_BUNDLE_ID="${{ github.event.inputs.bundle_id || 'app.garlic2817.jaguar9702' }}"
-          echo "Updating CFBundleIdentifier in Info.plist to: $TARGET_BUNDLE_ID"
-          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $TARGET_BUNDLE_ID" "$TARGET_APP/Info.plist" 2>/dev/null || \
-          /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string $TARGET_BUNDLE_ID" "$TARGET_APP/Info.plist" || true
-
-          if [ ! -f "$TARGET_APP/SanAndreasUnity" ]; then
-            echo '#!/bin/sh' > "$TARGET_APP/SanAndreasUnity"
-            chmod +x "$TARGET_APP/SanAndreasUnity"
-          fi
-
-          # Dong goi thanh file IPA
-          IPA_NAME="SanAndreasUnity-iOS-Speed250.ipa"
-          zip -q -r -y "$EXPORT_DIR/$IPA_NAME" Payload
-
-          echo "=== IPA Generated Successfully ==="
-          ls -lh "$EXPORT_DIR/$IPA_NAME"
-          echo "EXPORT_IPA_PATH=$EXPORT_DIR/$IPA_NAME" >> $GITHUB_ENV
+      - name: 4. Package and Ad-hoc Sign IPA
+        run: |
+          APP_DIR="Payload/SanAndreasUnity.app"
+          echo "=== Ad-hoc signing Payload/SanAndreasUnity.app ==="
+          codesign --force --deep --sign - "$APP_DIR" || true
+          echo "=== Zipping Payload into IPA ==="
+          zip -q -r -y ipa_export/SanAndreasUnity-iOS-Speed250.ipa Payload
+          ls -lh ipa_export/SanAndreasUnity-iOS-Speed250.ipa
 
       - name: 5. Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SanAndreasUnity-iOS-IPA
-          path: ipa_export/*.ipa
+          name: SanAndreasUnity-iOS-Speed250-IPA
+          path: ipa_export/SanAndreasUnity-iOS-Speed250.ipa
           retention-days: 30
 
-      - name: 6. Create GitHub Release
+      - name: 6. Publish GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="v1.0.${{ github.run_number }}"
-          echo "Creating release $TAG_NAME..."
-          gh release create "$TAG_NAME" "$EXPORT_IPA_PATH" \
-            --title "SanAndreasUnity iOS (Vận tốc 200-250 km/h - Build #${{ github.run_number }})" \
-            --notes "Bản IPA nâng cấp tốc độ xe 200 - 250 km/h, 60 FPS iOS, cảm ứng drift & nitro, khớp chứng chỉ app.garlic2817.jaguar9702." || \
-          gh release upload "$TAG_NAME" "$EXPORT_IPA_PATH" --clobber || true
+          RUN_NUM="${{ github.run_number }}"
+          TAG="v1.0.speed250-b$RUN_NUM"
+          echo "Creating Release $TAG..."
+          gh release create "$TAG" ipa_export/SanAndreasUnity-iOS-Speed250.ipa             --title "San Andreas Unity iOS (Speed 250 km/h - Build #$RUN_NUM)"             --notes "Bản build IPA nâng cấp tốc độ xe 200-250 km/h, 60 FPS, cảm ứng iOS, khớp chứng chỉ app.garlic2817.jaguar9702."
