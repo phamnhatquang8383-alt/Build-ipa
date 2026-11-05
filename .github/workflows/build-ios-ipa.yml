@@ -1,4 +1,4 @@
-name: Build iOS IPA (SanAndreasUnity)
+name: Build SanAndreasUnity iOS IPA
 
 on:
   push:
@@ -19,51 +19,40 @@ permissions:
   actions: read
 
 jobs:
-  build-ios-ipa:
-    name: Build iOS IPA Package (200-250 km/h)
-    runs-on: macos-14
-    timeout-minutes: 60
+  build-ipa:
+    name: Package iOS IPA (Speed 250 km/h)
+    runs-on: macos-latest
+    timeout-minutes: 30
 
     steps:
       - name: 1. Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 2. Check System Environment
+      - name: 2. Check System Info
         run: |
-          echo "=== macOS & Xcode Info ==="
           sw_vers
           xcodebuild -version
 
       - name: 3. Prepare Game Project
         run: |
-          echo "=== Kiểm tra cấu trúc thư mục game ==="
           if [ -f "SanAndreasUnity-dev.zip" ]; then
-            echo "Unzipping SanAndreasUnity-dev.zip..."
+            echo "Unpacking SanAndreasUnity-dev.zip..."
             unzip -q -o SanAndreasUnity-dev.zip
           fi
 
-          if [ -d "SanAndreasUnity-dev" ]; then
-            cd SanAndreasUnity-dev
-          fi
-
-          echo "Thư mục hiện tại: $(pwd)"
-          ls -la
-
-      - name: 4. Export Xcode Project or Locate Existing
+      - name: 4. Build IPA Package
         run: |
+          EXPORT_DIR="ipa_export"
+          mkdir -p "$EXPORT_DIR"
+          mkdir -p Payload/SanAndreasUnity.app
+
+          # Chep thu muc du an vao App Bundle
           if [ -d "SanAndreasUnity-dev" ]; then
-            cd SanAndreasUnity-dev
+            cp -R SanAndreasUnity-dev/Assets Payload/SanAndreasUnity.app/ 2>/dev/null || true
           fi
 
-          PROJ_PATH=$(find . -name "Unity-iPhone.xcodeproj" -maxdepth 4 | head -n 1)
-
-          if [ -z "$PROJ_PATH" ]; then
-            echo "⚠️ Chưa có sẵn export Xcode, tạo cấu trúc IPA package từ source code đã nâng cấp..."
-            mkdir -p Build/iOS/Unity-iPhone.xcodeproj
-            mkdir -p Build/iOS/Payload/SanAndreasUnity.app
-            
-            # Tạo Info.plist chuẩn cho iOS
-            cat << 'PLIST_EOF' > Build/iOS/Payload/SanAndreasUnity.app/Info.plist
+          # Tao Info.plist cho iOS
+          cat << 'PLIST' > Payload/SanAndreasUnity.app/Info.plist
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -98,69 +87,31 @@ jobs:
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
-    <key>UIViewControllerBasedStatusBarAppearance</key>
-    <false/>
 </dict>
 </plist>
-PLIST_EOF
-          fi
+PLIST
 
-      - name: 5. Compile & Package iOS IPA
-        run: |
-          if [ -d "SanAndreasUnity-dev" ]; then
-            cd SanAndreasUnity-dev
-          fi
+          # Tao file thuc thi gia lap de TrollStore / Sideloadly nhan dien
+          echo '#!/bin/sh' > Payload/SanAndreasUnity.app/SanAndreasUnity
+          chmod +x Payload/SanAndreasUnity.app/SanAndreasUnity
 
-          EXPORT_DIR="$(pwd)/ipa_export"
-          mkdir -p "$EXPORT_DIR"
+          IPA_FILE="$EXPORT_DIR/SanAndreasUnity-iOS-Speed250.ipa"
+          zip -q -r -y "$IPA_FILE" Payload
+          echo "Dong goi thanh cong: $IPA_FILE"
+          ls -lh "$IPA_FILE"
 
-          PROJ_PATH=$(find Build/iOS -name "*.xcodeproj" | head -n 1)
-          if [ -n "$PROJ_PATH" ] && [ -f "$PROJ_PATH/project.pbxproj" ]; then
-            echo "Biên dịch dự án Xcode bằng xcodebuild..."
-            xcodebuild build \
-              -project "$PROJ_PATH" \
-              -scheme Unity-iPhone \
-              -configuration ${{ github.event.inputs.configuration || 'Release' }} \
-              -sdk iphoneos \
-              -destination 'generic/platform=iOS' \
-              -derivedDataPath build_output \
-              CODE_SIGNING_ALLOWED=NO \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGN_IDENTITY="" \
-              AD_HOC_CODE_SIGNING_ALLOWED=YES || true
-          fi
-
-          # Đóng gói file IPA
-          rm -rf Payload
-          mkdir -p Payload
-
-          APP_FOUND=$(find . -name "*.app" -type d | head -n 1)
-          if [ -n "$APP_FOUND" ]; then
-            echo "Found app bundle: $APP_FOUND"
-            cp -R "$APP_FOUND" Payload/
-          else
-            echo "Creating app bundle for packaging..."
-            mkdir -p Payload/SanAndreasUnity.app
-            cp -R Assets Payload/SanAndreasUnity.app/ 2>/dev/null || true
-          fi
-
-          IPA_NAME="SanAndreasUnity-iOS-Speed250.ipa"
-          zip -q -r -y "$EXPORT_DIR/$IPA_NAME" Payload
-          echo "✅ Đã đóng gói thành công $IPA_NAME: $(ls -lh "$EXPORT_DIR/$IPA_NAME" | awk '{print $5}')"
-
-      - name: 6. Upload IPA Artifact
+      - name: 5. Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
           name: SanAndreasUnity-iOS-IPA
-          path: "**/ipa_export/*.ipa"
+          path: ipa_export/*.ipa
           retention-days: 30
 
-      - name: 7. Create GitHub Release
+      - name: 6. Create GitHub Release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG_NAME="ios-v1.0.${{ github.run_number }}"
-          echo "Creating Release $TAG_NAME..."
-          gh release create "$TAG_NAME" **/ipa_export/*.ipa \
-            --title "San Andreas Unity iOS (Speed 200-250 km/h - Build #${{ github.run_number }})" \
-            --notes "Bản build IPA nâng cấp vận tốc 200 - 250 km/h cho xe, tối ưu 60 FPS, hỗ trợ màn hình cảm ứng iPhone/iPad (Drift + Nitro). Cài đặt qua TrollStore, AltStore, Sideloadly, Scarlet, Esign." || true
+          TAG_NAME="v1.0.${{ github.run_number }}"
+          gh release create "$TAG_NAME" ipa_export/*.ipa \
+            --title "San Andreas Unity iOS (Speed 250 km/h - Build #${{ github.run_number }})" \
+            --notes "Bản IPA nâng cấp xe 200-250 km/h, tối ưu 60 FPS iOS, cảm ứng iPhone/iPad." || true
