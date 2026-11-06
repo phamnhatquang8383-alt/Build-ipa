@@ -8,22 +8,18 @@ on:
 jobs:
   build-ipa:
     name: Build & Package IPA
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Environment
-        run: |
-          mkdir -p build/Payload
-
       - name: Assemble iOS App Bundle
         run: |
           APP_NAME="GoogleAIConsole"
-          APP_DIR="build/Payload/${APP_NAME}.app"
-          mkdir -p "${APP_DIR}"
-          
+          mkdir -p "Payload/${APP_NAME}.app"
+          APP_DIR="Payload/${APP_NAME}.app"
+
           if [ -f "index.html" ]; then
             cp index.html "${APP_DIR}/"
           fi
@@ -64,14 +60,12 @@ jobs:
 PLIST
 
           echo '#!/bin/sh' > "${APP_DIR}/GoogleAIConsole"
-          echo 'echo "Starting Google AI Console"' >> "${APP_DIR}/GoogleAIConsole"
+          echo 'echo "Google AI Console running"' >> "${APP_DIR}/GoogleAIConsole"
           chmod +x "${APP_DIR}/GoogleAIConsole"
 
       - name: Package .IPA
         run: |
-          cd build
-          zip -qry ../GoogleAIConsole.ipa Payload
-          cd ..
+          zip -qry GoogleAIConsole.ipa Payload
           ls -la GoogleAIConsole.ipa
 
       - name: Upload IPA Artifact
