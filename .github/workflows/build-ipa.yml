@@ -1,76 +1,85 @@
-name: iOS IPA Auto Builder
+name: Build and Package iOS IPA
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+  workflow_dispatch:
 
 jobs:
-  build-ipa:
-    name: Build & Package IPA
+  build:
+    name: Build iOS IPA Package
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Assemble iOS App Bundle
+      - name: Create iOS App Bundle Structure
         run: |
-          APP_NAME="GoogleAIConsole"
-          mkdir -p "Payload/${APP_NAME}.app"
-          APP_DIR="Payload/${APP_NAME}.app"
+          echo "==> Initializing iOS Bundle Structure..."
+          mkdir -p Payload/GoogleAIConsole.app
 
+          # Copy index.html or assets into app bundle
           if [ -f "index.html" ]; then
-            cp index.html "${APP_DIR}/"
+            cp index.html Payload/GoogleAIConsole.app/
           fi
 
-          cat << 'PLIST' > "${APP_DIR}/Info.plist"
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleDisplayName</key>
-  <string>Google AI Console</string>
-  <key>CFBundleExecutable</key>
-  <string>GoogleAIConsole</string>
-  <key>CFBundleIdentifier</key>
-  <string>com.phamnhatquang.googleaiconsole</string>
-  <key>CFBundleName</key>
-  <string>GoogleAIConsole</string>
-  <key>CFBundlePackageType</key>
-  <string>APPL</string>
-  <key>CFBundleShortVersionString</key>
-  <string>1.0.0</string>
-  <key>CFBundleVersion</key>
-  <string>1.0.0</string>
-  <key>LSRequiresIPhoneOS</key>
-  <true/>
-  <key>UIDeviceFamily</key>
-  <array>
-    <integer>1</integer>
-    <integer>2</integer>
-  </array>
-  <key>NSAppTransportSecurity</key>
-  <dict>
-    <key>NSAllowsArbitraryLoads</key>
-    <true/>
-  </dict>
-</dict>
-</plist>
-PLIST
+          # Create compliant Apple iOS Info.plist
+          cat << 'EOF' > Payload/GoogleAIConsole.app/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleDisplayName</key>
+            <string>Google AI Console</string>
+            <key>CFBundleExecutable</key>
+            <string>GoogleAIConsole</string>
+            <key>CFBundleIdentifier</key>
+            <string>com.phamnhatquang.googleaiconsole</string>
+            <key>CFBundleName</key>
+            <string>GoogleAIConsole</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>1.0.0</string>
+            <key>CFBundleVersion</key>
+            <string>1.0.0</string>
+            <key>LSRequiresIPhoneOS</key>
+            <true/>
+            <key>UIDeviceFamily</key>
+            <array>
+              <integer>1</integer>
+              <integer>2</integer>
+            </array>
+            <key>NSAppTransportSecurity</key>
+            <dict>
+              <key>NSAllowsArbitraryLoads</key>
+              <true/>
+            </dict>
+          </dict>
+          </plist>
+          EOF
 
-          echo '#!/bin/sh' > "${APP_DIR}/GoogleAIConsole"
-          echo 'echo "Google AI Console running"' >> "${APP_DIR}/GoogleAIConsole"
-          chmod +x "${APP_DIR}/GoogleAIConsole"
+          # Create executable launcher
+          echo '#!/bin/sh' > Payload/GoogleAIConsole.app/GoogleAIConsole
+          echo 'echo "Google AI Console starting..."' >> Payload/GoogleAIConsole.app/GoogleAIConsole
+          chmod +x Payload/GoogleAIConsole.app/GoogleAIConsole
 
-      - name: Package .IPA
+      - name: Build IPA Archive
         run: |
+          echo "==> Zipping iOS IPA Archive..."
           zip -qry GoogleAIConsole.ipa Payload
-          ls -la GoogleAIConsole.ipa
+          ls -lh GoogleAIConsole.ipa
+
+      - name: Validate IPA Structure
+        run: |
+          echo "==> Validating IPA content..."
+          unzip -l GoogleAIConsole.ipa | grep -E "Info.plist|GoogleAIConsole"
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
           name: GoogleAIConsole-IPA
           path: GoogleAIConsole.ipa
-          retention-days: 14
+          retention-days: 30
