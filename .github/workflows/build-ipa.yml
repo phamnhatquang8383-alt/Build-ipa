@@ -1,0 +1,82 @@
+name: iOS IPA Auto Builder
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-ipa:
+    name: Build & Package IPA
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Environment
+        run: |
+          mkdir -p build/Payload
+
+      - name: Assemble iOS App Bundle
+        run: |
+          APP_NAME="GoogleAIConsole"
+          APP_DIR="build/Payload/${APP_NAME}.app"
+          mkdir -p "${APP_DIR}"
+          
+          if [ -f "index.html" ]; then
+            cp index.html "${APP_DIR}/"
+          fi
+
+          cat << 'PLIST' > "${APP_DIR}/Info.plist"
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDisplayName</key>
+  <string>Google AI Console</string>
+  <key>CFBundleExecutable</key>
+  <string>GoogleAIConsole</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.phamnhatquang.googleaiconsole</string>
+  <key>CFBundleName</key>
+  <string>GoogleAIConsole</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>1.0.0</string>
+  <key>CFBundleVersion</key>
+  <string>1.0.0</string>
+  <key>LSRequiresIPhoneOS</key>
+  <true/>
+  <key>UIDeviceFamily</key>
+  <array>
+    <integer>1</integer>
+    <integer>2</integer>
+  </array>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>
+    <true/>
+  </dict>
+</dict>
+</plist>
+PLIST
+
+          echo '#!/bin/sh' > "${APP_DIR}/GoogleAIConsole"
+          echo 'echo "Starting Google AI Console"' >> "${APP_DIR}/GoogleAIConsole"
+          chmod +x "${APP_DIR}/GoogleAIConsole"
+
+      - name: Package .IPA
+        run: |
+          cd build
+          zip -qry ../GoogleAIConsole.ipa Payload
+          cd ..
+          ls -la GoogleAIConsole.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoogleAIConsole-IPA
+          path: GoogleAIConsole.ipa
+          retention-days: 14
