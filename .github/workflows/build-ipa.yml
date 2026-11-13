@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-ipa:
-    runs-on: macos-latest
+    runs-on: macos-15-intel
 
     steps:
       - name: Checkout repository
@@ -204,6 +204,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="v1.4.1-b${{ github.run_number }}"
-          gh release create "$TAG" "$OUT_DIR"/* \
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$OUT_DIR"/* --clobber
+          else
+            gh release create "$TAG" "$OUT_DIR"/* \
             --title "PhamQuangIOS 1.4.1 (Build ${{ github.run_number }})" \
             --notes "Built from \`PhamQuang-IOS-source.zip\` on macOS/Xcode 26. Includes signed IPA (\`PhamQuangIOS-signed.ipa\`) and unsigned IPA (\`PhamQuangIOS-unsigned.ipa\`)."
+          fi
