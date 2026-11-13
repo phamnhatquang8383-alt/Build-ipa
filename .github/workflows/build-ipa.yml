@@ -16,7 +16,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract PhamQuang-IOS-source.zip
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('PhamQuang-IOS-source.zip') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Extract and patch PhamQuang-IOS-source.zip
         run: |
           WORK_DIR="$RUNNER_TEMP/phamquang-src"
           OUT_DIR="$RUNNER_TEMP/ipa-output"
@@ -28,6 +40,25 @@ jobs:
             echo "Could not locate PhamQuangIOS.xcodeproj inside PhamQuang-IOS-source.zip"
             exit 1
           fi
+
+          # Fix missing password parameter forwarding in AppPatchPlan.stageSource
+          python3 - "$PROJECT_DIR/CC365-Apps/Files/AppPatchPlan.swift" <<'PYEOF'
+          import sys
+          path = sys.argv[1]
+          src = open(path, "r", encoding="utf-8").read()
+          old_sig = "func stageSource(_ selection: URL, expectDirectory: Bool? = nil) async throws -> AppPatchSource"
+          new_sig = "func stageSource(_ selection: URL, expectDirectory: Bool? = nil, password: String? = nil) async throws -> AppPatchSource"
+          old_call1 = "expectDirectory: expectDirectory)"
+          new_call1 = "expectDirectory: expectDirectory, password: password)"
+          if old_sig in src:
+              src = src.replace(old_sig, new_sig, 1)
+              src = src.replace(old_call1, new_call1)
+              open(path, "w", encoding="utf-8").write(src)
+              print("Patched AppPatchPlan.swift successfully")
+          else:
+              print("AppPatchPlan.swift signature already updated or changed")
+          PYEOF
+
           echo "WORK_DIR=$WORK_DIR" >> "$GITHUB_ENV"
           echo "OUT_DIR=$OUT_DIR" >> "$GITHUB_ENV"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
@@ -35,14 +66,15 @@ jobs:
       - name: Select Xcode 26+ and check toolchain
         run: |
           cd "$PROJECT_DIR"
-          DEV_DIR=$(./scripts/select-xcode.sh || true)
+          DEV_DIR=""
+          for candidate in /Applications/Xcode_26.3.app/Contents/Developer /Applications/Xcode_26.2.app/Contents/Developer /Applications/Xcode_26*.app/Contents/Developer; do
+            if [ -x "$candidate/usr/bin/xcodebuild" ]; then
+              DEV_DIR="$candidate"
+              break
+            fi
+          done
           if [ -z "$DEV_DIR" ]; then
-            for candidate in /Applications/Xcode_26*.app/Contents/Developer /Applications/Xcode.app/Contents/Developer; do
-              if [ -x "$candidate/usr/bin/xcodebuild" ]; then
-                DEV_DIR="$candidate"
-                break
-              fi
-            done
+            DEV_DIR=$(./scripts/select-xcode.sh || true)
           fi
           if [ -z "$DEV_DIR" ]; then
             echo "No suitable Xcode Developer directory found"
@@ -208,6 +240,6 @@ jobs:
             gh release upload "$TAG" "$OUT_DIR"/* --clobber
           else
             gh release create "$TAG" "$OUT_DIR"/* \
-            --title "PhamQuangIOS 1.4.1 (Build ${{ github.run_number }})" \
-            --notes "Built from \`PhamQuang-IOS-source.zip\` on macOS/Xcode 26. Includes signed IPA (\`PhamQuangIOS-signed.ipa\`) and unsigned IPA (\`PhamQuangIOS-unsigned.ipa\`)."
+              --title "PhamQuangIOS 1.4.1 (Build ${{ github.run_number }})" \
+              --notes "Built from \`PhamQuang-IOS-source.zip\` on macOS/Xcode 26. Includes signed IPA (\`PhamQuangIOS-signed.ipa\`) and unsigned IPA (\`PhamQuangIOS-unsigned.ipa\`)."
           fi
