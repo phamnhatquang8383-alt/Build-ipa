@@ -59,6 +59,21 @@ jobs:
               print("AppPatchPlan.swift signature already updated or changed")
           PYEOF
 
+          # Fix overlapping access to derived in PatchArchiveCrypto.swift
+          python3 - "$PROJECT_DIR/CC365-Apps/Files/PatchArchiveCrypto.swift" <<'PYEOF'
+          import sys
+          path = sys.argv[1]
+          src = open(path, "r", encoding="utf-8").read()
+          old = "derivedBytes.bindMemory(to: UInt8.self).baseAddress, derived.count)"
+          new = "derivedBytes.bindMemory(to: UInt8.self).baseAddress, derivedBytes.count)"
+          if old in src:
+              src = src.replace(old, new)
+              open(path, "w", encoding="utf-8").write(src)
+              print("Patched PatchArchiveCrypto.swift successfully")
+          else:
+              print("PatchArchiveCrypto.swift already updated or changed")
+          PYEOF
+
           echo "WORK_DIR=$WORK_DIR" >> "$GITHUB_ENV"
           echo "OUT_DIR=$OUT_DIR" >> "$GITHUB_ENV"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
