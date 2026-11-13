@@ -24,24 +24,33 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('PhamQuang-IOS-source.zip') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('*.zip') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Extract and patch PhamQuang-IOS-source.zip
+      - name: Extract and prepare source archive
         run: |
           WORK_DIR="$RUNNER_TEMP/phamquang-src"
           OUT_DIR="$RUNNER_TEMP/ipa-output"
           rm -rf "$WORK_DIR" "$OUT_DIR"
           mkdir -p "$WORK_DIR" "$OUT_DIR"
-          unzip -q PhamQuang-IOS-source.zip -d "$WORK_DIR"
-          PROJECT_DIR=$(find "$WORK_DIR" -maxdepth 3 -name "PhamQuangIOS.xcodeproj" -exec dirname {} \; | head -n 1)
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "Could not locate PhamQuangIOS.xcodeproj inside PhamQuang-IOS-source.zip"
+
+          SRC_ZIP=$(ls -1 *.zip 2>/dev/null | head -n 1 || true)
+          if [ -z "$SRC_ZIP" ]; then
+            echo "No source .zip archive found in repository root"
             exit 1
           fi
+          echo "Extracting source archive: $SRC_ZIP"
+          unzip -q "$SRC_ZIP" -d "$WORK_DIR"
 
-          # Fix missing password parameter forwarding in AppPatchPlan.stageSource
+          PROJECT_DIR=$(find "$WORK_DIR" -maxdepth 4 -name "PhamQuangIOS.xcodeproj" -exec dirname {} \; | head -n 1)
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "Could not locate PhamQuangIOS.xcodeproj inside $SRC_ZIP"
+            exit 1
+          fi
+          echo "Resolved PROJECT_DIR: $PROJECT_DIR"
+
+          # Fix missing password parameter forwarding in AppPatchPlan.stageSource (if needed)
           python3 - "$PROJECT_DIR/CC365-Apps/Files/AppPatchPlan.swift" <<'PYEOF'
           import sys
           path = sys.argv[1]
@@ -56,10 +65,10 @@ jobs:
               open(path, "w", encoding="utf-8").write(src)
               print("Patched AppPatchPlan.swift successfully")
           else:
-              print("AppPatchPlan.swift signature already updated or changed")
+              print("AppPatchPlan.swift already updated")
           PYEOF
 
-          # Fix overlapping access to derived in PatchArchiveCrypto.swift
+          # Fix overlapping access to derived in PatchArchiveCrypto.swift (if needed)
           python3 - "$PROJECT_DIR/CC365-Apps/Files/PatchArchiveCrypto.swift" <<'PYEOF'
           import sys
           path = sys.argv[1]
@@ -71,7 +80,7 @@ jobs:
               open(path, "w", encoding="utf-8").write(src)
               print("Patched PatchArchiveCrypto.swift successfully")
           else:
-              print("PatchArchiveCrypto.swift already updated or changed")
+              print("PatchArchiveCrypto.swift already updated")
           PYEOF
 
           echo "WORK_DIR=$WORK_DIR" >> "$GITHUB_ENV"
@@ -140,8 +149,13 @@ jobs:
           rm -rf "$SIGN_DIR"
           mkdir -p "$SIGN_DIR"
 
-          echo "$IOS_P12_BASE64" | base64 --decode > "$SIGN_DIR/cert.p12"
-          echo "$IOS_MOBILEPROVISION_BASE64" | base64 --decode > "$SIGN_DIR/cert.mobileprovision"
+          python3 - "$SIGN_DIR/cert.p12" "$SIGN_DIR/cert.mobileprovision" <<'PYEOF'
+          import base64, os, sys
+          with open(sys.argv[1], "wb") as f:
+              f.write(base64.b64decode(os.environ["IOS_P12_BASE64"]))
+          with open(sys.argv[2], "wb") as f:
+              f.write(base64.b64decode(os.environ["IOS_MOBILEPROVISION_BASE64"]))
+          PYEOF
 
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -256,5 +270,5 @@ jobs:
           else
             gh release create "$TAG" "$OUT_DIR"/* \
               --title "PhamQuangIOS 1.4.1 (Build ${{ github.run_number }})" \
-              --notes "Built from \`PhamQuang-IOS-source.zip\` on macOS/Xcode 26. Includes signed IPA (\`PhamQuangIOS-signed.ipa\`) and unsigned IPA (\`PhamQuangIOS-unsigned.ipa\`)."
+              --notes "Built from \`PhamQuang-IOS-source-fixed.zip\` on macOS/Xcode 26. Includes signed IPA (\`PhamQuangIOS-signed.ipa\`) and unsigned IPA (\`PhamQuangIOS-unsigned.ipa\`)."
           fi
