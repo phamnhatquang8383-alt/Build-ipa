@@ -1,0 +1,305 @@
+name: Build PhamQuangIOS IPA
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ipa:
+    runs-on: macos-15-intel
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('*.zip') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Extract and prepare source archive
+        run: |
+          WORK_DIR="$RUNNER_TEMP/phamquang-src"
+          OUT_DIR="$RUNNER_TEMP/ipa-output"
+          rm -rf "$WORK_DIR" "$OUT_DIR"
+          mkdir -p "$WORK_DIR" "$OUT_DIR"
+
+          SRC_ZIP=$(ls -1 *.zip 2>/dev/null | head -n 1 || true)
+          if [ -z "$SRC_ZIP" ]; then
+            echo "No source .zip archive found in repository root"
+            exit 1
+          fi
+          echo "Extracting source archive: $SRC_ZIP"
+          echo "SRC_ZIP=$SRC_ZIP" >> "$GITHUB_ENV"
+          unzip -q "$SRC_ZIP" -d "$WORK_DIR"
+
+          PROJECT_DIR=$(find "$WORK_DIR" -maxdepth 4 -name "PhamQuangIOS.xcodeproj" -exec dirname {} \; | head -n 1)
+          if [ -z "$PROJECT_DIR" ]; then
+            echo "Could not locate PhamQuangIOS.xcodeproj inside $SRC_ZIP"
+            exit 1
+          fi
+          echo "Resolved PROJECT_DIR: $PROJECT_DIR"
+
+          # Clean any stale build artifacts included in the archive
+          rm -rf "$PROJECT_DIR/build"
+
+          # Ensure normal read permissions on bundled audio assets
+          if [ -d "$PROJECT_DIR/CC365-Apps/Audio" ]; then
+            chmod 644 "$PROJECT_DIR/CC365-Apps/Audio"/* || true
+          fi
+
+          # Fix missing password parameter forwarding in AppPatchPlan.stageSource (if needed)
+          python3 - "$PROJECT_DIR/CC365-Apps/Files/AppPatchPlan.swift" <<'PYEOF'
+          import sys
+          path = sys.argv[1]
+          src = open(path, "r", encoding="utf-8").read()
+          old_sig = "func stageSource(_ selection: URL, expectDirectory: Bool? = nil) async throws -> AppPatchSource"
+          new_sig = "func stageSource(_ selection: URL, expectDirectory: Bool? = nil, password: String? = nil) async throws -> AppPatchSource"
+          old_call1 = "expectDirectory: expectDirectory)"
+          new_call1 = "expectDirectory: expectDirectory, password: password)"
+          if old_sig in src:
+              src = src.replace(old_sig, new_sig, 1)
+              src = src.replace(old_call1, new_call1)
+              open(path, "w", encoding="utf-8").write(src)
+              print("Patched AppPatchPlan.swift successfully")
+          else:
+              print("AppPatchPlan.swift already updated")
+          PYEOF
+
+          # Fix overlapping access to derived in PatchArchiveCrypto.swift (if needed)
+          python3 - "$PROJECT_DIR/CC365-Apps/Files/PatchArchiveCrypto.swift" <<'PYEOF'
+          import sys
+          path = sys.argv[1]
+          src = open(path, "r", encoding="utf-8").read()
+          old = "derivedBytes.bindMemory(to: UInt8.self).baseAddress, derived.count)"
+          new = "derivedBytes.bindMemory(to: UInt8.self).baseAddress, derivedBytes.count)"
+          if old in src:
+              src = src.replace(old, new)
+              open(path, "w", encoding="utf-8").write(src)
+              print("Patched PatchArchiveCrypto.swift successfully")
+          else:
+              print("PatchArchiveCrypto.swift already updated")
+          PYEOF
+
+          # Ensure Combine is imported in AppMusicPlayer.swift for ObservableObject
+          MUSIC_SWIFT="$PROJECT_DIR/CC365-Apps/Audio/AppMusicPlayer.swift"
+          if [ -f "$MUSIC_SWIFT" ]; then
+            python3 - "$MUSIC_SWIFT" <<'PYEOF'
+            import sys
+            path = sys.argv[1]
+            src = open(path, "r", encoding="utf-8").read()
+            if "ObservableObject" in src and "import Combine" not in src and "import SwiftUI" not in src:
+                src = "import Combine\n" + src
+                open(path, "w", encoding="utf-8").write(src)
+                print("Patched AppMusicPlayer.swift with import Combine")
+            else:
+                print("AppMusicPlayer.swift already has Combine/SwiftUI")
+            PYEOF
+          fi
+
+          echo "WORK_DIR=$WORK_DIR" >> "$GITHUB_ENV"
+          echo "OUT_DIR=$OUT_DIR" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Select Xcode 26+ and check toolchain
+        run: |
+          cd "$PROJECT_DIR"
+          DEV_DIR=""
+          for candidate in /Applications/Xcode_26.3.app/Contents/Developer /Applications/Xcode_26.2.app/Contents/Developer /Applications/Xcode_26*.app/Contents/Developer; do
+            if [ -x "$candidate/usr/bin/xcodebuild" ]; then
+              DEV_DIR="$candidate"
+              break
+            fi
+          done
+          if [ -z "$DEV_DIR" ]; then
+            DEV_DIR=$(./scripts/select-xcode.sh || true)
+          fi
+          if [ -z "$DEV_DIR" ]; then
+            echo "No suitable Xcode Developer directory found"
+            exit 1
+          fi
+          echo "DEVELOPER_DIR=$DEV_DIR" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$DEV_DIR"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+
+          rustup target add aarch64-apple-ios
+          rustc --version
+          cargo --version
+          if ! command -v cmake >/dev/null 2>&1; then
+            brew install cmake
+          fi
+          cmake --version
+
+      - name: Build native Rust libraries and iOS app (Release)
+        run: |
+          cd "$PROJECT_DIR"
+          make build
+          APP_PATH="$PROJECT_DIR/build/DerivedData/Build/Products/Release-iphoneos/PhamQuangIOS.app"
+          test -d "$APP_PATH"
+          ls -lh "$APP_PATH"
+          if [ -f "$PROJECT_DIR/CC365-Apps/Audio/audio_nang_cap.mp3" ]; then
+            test -f "$APP_PATH/audio_nang_cap.mp3"
+            echo "Verified bundled audio_nang_cap.mp3 in app bundle"
+          fi
+
+      - name: Package unsigned IPA
+        run: |
+          cd "$PROJECT_DIR"
+          APP_PATH="$PROJECT_DIR/build/DerivedData/Build/Products/Release-iphoneos/PhamQuangIOS.app"
+          python3 scripts/package_ipa.py \
+            --app "$APP_PATH" \
+            --output "$OUT_DIR/PhamQuangIOS-unsigned.ipa" \
+            --expected-bundle-id sato.cc365.file \
+            --expected-display-name "PhamQuang IOS" \
+            --expected-version 1.4.1 \
+            --expected-build 8 \
+            --expected-tunnel-bundle-id sato.cc365.file.tunnel
+
+      - name: Sign IPA with provided Apple Distribution certificate
+        env:
+          IOS_P12_BASE64: ${{ secrets.IOS_P12_BASE64 }}
+          IOS_P12_PASSWORD: ${{ secrets.IOS_P12_PASSWORD }}
+          IOS_MOBILEPROVISION_BASE64: ${{ secrets.IOS_MOBILEPROVISION_BASE64 }}
+        run: |
+          set -euo pipefail
+          SIGN_DIR="$RUNNER_TEMP/signing"
+          KEYCHAIN_PATH="$SIGN_DIR/build-ipa.keychain-db"
+          KEYCHAIN_PASS="temp-build-keychain-pass"
+          rm -rf "$SIGN_DIR"
+          mkdir -p "$SIGN_DIR"
+
+          python3 - "$SIGN_DIR/cert.p12" "$SIGN_DIR/cert.mobileprovision" <<'PYEOF'
+          import base64, os, sys
+          with open(sys.argv[1], "wb") as f:
+              f.write(base64.b64decode(os.environ["IOS_P12_BASE64"]))
+          with open(sys.argv[2], "wb") as f:
+              f.write(base64.b64decode(os.environ["IOS_MOBILEPROVISION_BASE64"]))
+          PYEOF
+
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security import "$SIGN_DIR/cert.p12" -P "$IOS_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+          EXISTING_KEYCHAINS=$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $EXISTING_KEYCHAINS
+
+          IDENTITY_HASH=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk '/1\)/{print $2; exit}')
+          if [ -z "$IDENTITY_HASH" ]; then
+            echo "No valid codesigning identity found in cert.p12"
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+            exit 1
+          fi
+          echo "Using signing identity: $IDENTITY_HASH"
+
+          security cms -D -i "$SIGN_DIR/cert.mobileprovision" > "$SIGN_DIR/profile.plist"
+
+          python3 - "$SIGN_DIR/profile.plist" "$SIGN_DIR/entitlements.plist" "$SIGN_DIR/bundle_id.txt" <<'PYEOF'
+          import plistlib, sys
+          profile_path, ent_out, bundle_out = sys.argv[1:4]
+          with open(profile_path, "rb") as f:
+              prof = plistlib.load(f)
+          ent = prof.get("Entitlements", {})
+          team_id = (prof.get("TeamIdentifier") or [""])[0]
+          app_id = ent.get("application-identifier", "")
+          prefix = f"{team_id}."
+          bundle_id = app_id[len(prefix):] if app_id.startswith(prefix) else app_id
+
+          out_ent = {
+              "application-identifier": app_id,
+              "com.apple.developer.team-identifier": team_id,
+              "get-task-allow": bool(ent.get("get-task-allow", False)),
+          }
+          if "keychain-access-groups" in ent:
+              out_ent["keychain-access-groups"] = ent["keychain-access-groups"]
+          if "com.apple.developer.networking.networkextension" in ent:
+              ne = ent["com.apple.developer.networking.networkextension"]
+              out_ent["com.apple.developer.networking.networkextension"] = (
+                  ["packet-tunnel-provider"] if "packet-tunnel-provider" in ne else ne
+              )
+          if "com.apple.developer.networking.vpn.api" in ent:
+              out_ent["com.apple.developer.networking.vpn.api"] = ent["com.apple.developer.networking.vpn.api"]
+
+          with open(ent_out, "wb") as f:
+              plistlib.dump(out_ent, f)
+          with open(bundle_out, "w") as f:
+              f.write(bundle_id)
+          print("Resolved bundle_id:", bundle_id)
+          print("Resolved entitlements:", out_ent)
+          PYEOF
+
+          BUNDLE_ID=$(cat "$SIGN_DIR/bundle_id.txt")
+          APP_SRC="$PROJECT_DIR/build/DerivedData/Build/Products/Release-iphoneos/PhamQuangIOS.app"
+          PAYLOAD_DIR="$SIGN_DIR/Payload"
+          APP_DST="$PAYLOAD_DIR/PhamQuangIOS.app"
+          mkdir -p "$PAYLOAD_DIR"
+          cp -R "$APP_SRC" "$APP_DST"
+
+          if [ -d "$APP_DST/PlugIns" ]; then
+            rm -rf "$APP_DST/PlugIns"
+          fi
+
+          /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_DST/Info.plist"
+          cp "$SIGN_DIR/cert.mobileprovision" "$APP_DST/embedded.mobileprovision"
+
+          if [ -d "$APP_DST/Frameworks" ]; then
+            find "$APP_DST/Frameworks" -maxdepth 2 \( -name "*.dylib" -o -name "*.framework" \) -exec \
+              /usr/bin/codesign --force --sign "$IDENTITY_HASH" --timestamp=none {} \;
+          fi
+
+          /usr/bin/codesign --force --sign "$IDENTITY_HASH" \
+            --entitlements "$SIGN_DIR/entitlements.plist" \
+            --generate-entitlement-der \
+            --timestamp=none \
+            "$APP_DST"
+
+          /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_DST"
+          /usr/bin/codesign -d --entitlements :- "$APP_DST"
+
+          (
+            cd "$SIGN_DIR"
+            /usr/bin/zip -qr "$OUT_DIR/PhamQuangIOS-signed.ipa" Payload
+          )
+          (
+            cd "$OUT_DIR"
+            shasum -a 256 PhamQuangIOS-signed.ipa > PhamQuangIOS-signed.ipa.sha256
+          )
+          ls -lh "$OUT_DIR"
+
+      - name: Cleanup temporary keychain
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing/build-ipa.keychain-db" 2>/dev/null || true
+
+      - name: Upload IPA artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhamQuangIOS-IPA-${{ github.run_number }}
+          path: ${{ runner.temp }}/ipa-output/*
+          if-no-files-found: error
+
+      - name: Publish GitHub Release with built IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v1.4.1-b${{ github.run_number }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$OUT_DIR"/* --clobber
+          else
+            gh release create "$TAG" "$OUT_DIR"/* \
+              --title "PhamQuangIOS 1.4.1 (Build ${{ github.run_number }})" \
+              --notes "Built from \`$SRC_ZIP\` on macOS/Xcode 26. Includes signed IPA (\`PhamQuangIOS-signed.ipa\`) and unsigned IPA (\`PhamQuangIOS-unsigned.ipa\`)."
+          fi
