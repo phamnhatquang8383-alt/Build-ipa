@@ -16,6 +16,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Guard against tracked signing material
+        run: python3 sev/sev_keys.py guard --repo "$GITHUB_WORKSPACE"
+
       - name: Cache Cargo dependencies
         uses: actions/cache@v4
         with:
@@ -145,7 +148,7 @@ jobs:
           set -euo pipefail
           SIGN_DIR="$RUNNER_TEMP/signing"
           KEYCHAIN_PATH="$SIGN_DIR/build-ipa.keychain-db"
-          KEYCHAIN_PASS="temp-build-keychain-pass"
+          KEYCHAIN_PASS="$(openssl rand -hex 24)"
           rm -rf "$SIGN_DIR"
           mkdir -p "$SIGN_DIR"
 
@@ -156,6 +159,12 @@ jobs:
           with open(sys.argv[2], "wb") as f:
               f.write(base64.b64decode(os.environ["IOS_MOBILEPROVISION_BASE64"]))
           PYEOF
+
+          python3 "$GITHUB_WORKSPACE/sev/sev_keys.py" check \
+            --p12 "$SIGN_DIR/cert.p12" \
+            --password-env IOS_P12_PASSWORD \
+            --profile "$SIGN_DIR/cert.mobileprovision" \
+            --bundle-id sato.cc365.file
 
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
@@ -246,6 +255,12 @@ jobs:
             cd "$OUT_DIR"
             shasum -a 256 PhamQuangIOS-signed.ipa > PhamQuangIOS-signed.ipa.sha256
           )
+          python3 "$GITHUB_WORKSPACE/sev/sev_keys.py" verify \
+            --ipa "$OUT_DIR/PhamQuangIOS-signed.ipa" \
+            --bundle-id sato.cc365.file \
+            --version 1.4.1 \
+            --build 8
+
           ls -lh "$OUT_DIR"
 
       - name: Cleanup temporary keychain
