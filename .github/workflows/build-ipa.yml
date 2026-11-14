@@ -93,20 +93,18 @@ jobs:
           PYEOF
 
           # Ensure Combine is imported in AppMusicPlayer.swift for ObservableObject
-          MUSIC_SWIFT="$PROJECT_DIR/CC365-Apps/Audio/AppMusicPlayer.swift"
-          if [ -f "$MUSIC_SWIFT" ]; then
-            python3 - "$MUSIC_SWIFT" <<'PYEOF'
-            import sys
-            path = sys.argv[1]
-            src = open(path, "r", encoding="utf-8").read()
-            if "ObservableObject" in src and "import Combine" not in src and "import SwiftUI" not in src:
-                src = "import Combine\n" + src
-                open(path, "w", encoding="utf-8").write(src)
-                print("Patched AppMusicPlayer.swift with import Combine")
-            else:
-                print("AppMusicPlayer.swift already has Combine/SwiftUI")
-            PYEOF
-          fi
+          python3 - "$PROJECT_DIR/CC365-Apps/Audio/AppMusicPlayer.swift" <<'PYEOF'
+          import os, sys
+          path = sys.argv[1]
+          if os.path.exists(path):
+              src = open(path, "r", encoding="utf-8").read()
+              if "ObservableObject" in src and "import Combine" not in src and "import SwiftUI" not in src:
+                  src = "import Combine\n" + src
+                  open(path, "w", encoding="utf-8").write(src)
+                  print("Patched AppMusicPlayer.swift with import Combine")
+              else:
+                  print("AppMusicPlayer.swift already has Combine/SwiftUI")
+          PYEOF
 
           echo "WORK_DIR=$WORK_DIR" >> "$GITHUB_ENV"
           echo "OUT_DIR=$OUT_DIR" >> "$GITHUB_ENV"
