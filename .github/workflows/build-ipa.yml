@@ -94,7 +94,26 @@ jobs:
                   open(patch_plan, "w", encoding="utf-8").write(src)
                   print("Patched stageSource password parameter in AppPatchPlan.swift")
 
-          # 4. CC365-Apps/Files/PatchArchiveCrypto.swift: fix overlapping access to derived
+          # 4. CC365-Apps/Files/AppPatchView.swift: ContentUnavailableView requires iOS 17+, use CC365UnavailableView
+          app_patch_view = os.path.join(project_dir, "CC365-Apps", "Files", "AppPatchView.swift")
+          if os.path.exists(app_patch_view):
+              src = open(app_patch_view, "r", encoding="utf-8").read()
+              old_cuv = """                    ContentUnavailableView(
+                        "Chưa có tính năng",
+                        systemImage: "switch.2",
+                        description: Text(notice)
+                    )"""
+              new_cuv = """                    CC365UnavailableView(
+                        title: "Chưa có tính năng",
+                        systemImage: "switch.2",
+                        description: notice
+                    )"""
+              if old_cuv in src:
+                  src = src.replace(old_cuv, new_cuv, 1)
+                  open(app_patch_view, "w", encoding="utf-8").write(src)
+                  print("Patched ContentUnavailableView -> CC365UnavailableView in AppPatchView.swift")
+
+          # 5. CC365-Apps/Files/PatchArchiveCrypto.swift: fix overlapping access to derived
           crypto_file = os.path.join(project_dir, "CC365-Apps", "Files", "PatchArchiveCrypto.swift")
           if os.path.exists(crypto_file):
               src = open(crypto_file, "r", encoding="utf-8").read()
