@@ -255,16 +255,27 @@ jobs:
           fi
           echo "Using signing identity: $IDENTITY_HASH"
           security cms -D -i "$SIGN_DIR/cert.mobileprovision" > "$SIGN_DIR/profile.plist"
-          python3 - "$SIGN_DIR/profile.plist" "$SIGN_DIR/entitlements.plist" "$SIGN_DIR/bundle_id.txt" <<'PYEOF'
-          import plistlib, sys
-          profile_path, ent_out, bundle_out = sys.argv[1:4]
+          CERT_SHA256=$(openssl pkcs12 -in "$SIGN_DIR/cert.p12" -nokeys -clcerts -passin env:IOS_P12_PASSWORD | openssl x509 -outform DER | shasum -a 256 | awk '{print $1}')
+          if [ -z "$CERT_SHA256" ]; then
+            echo "Could not derive signing certificate fingerprint"
+            exit 1
+          fi
+          python3 - "$SIGN_DIR/profile.plist" "$SIGN_DIR/entitlements.plist" "$SIGN_DIR/bundle_id.txt" "$APP_PATH/Info.plist" "$CERT_SHA256" <<'PYEOF'
+          import fnmatch, hashlib, plistlib, sys
+          profile_path, ent_out, bundle_out, info_path, cert_sha256 = sys.argv[1:6]
           with open(profile_path, "rb") as f:
               prof = plistlib.load(f)
+          with open(info_path, "rb") as f:
+              app_info = plistlib.load(f)
           ent = prof.get("Entitlements", {})
           team_id = (prof.get("TeamIdentifier") or [""])[0]
           app_id = ent.get("application-identifier", "")
-          prefix = f"{team_id}."
-          bundle_id = app_id[len(prefix):] if app_id.startswith(prefix) else app_id
+          bundle_id = app_info.get("CFBundleIdentifier", "")
+          if not team_id or not bundle_id or not fnmatch.fnmatchcase(team_id + "." + bundle_id, app_id):
+              raise SystemExit("Main provisioning profile does not cover the built app bundle ID")
+          listed = {hashlib.sha256(bytes(cert)).hexdigest() for cert in prof.get("DeveloperCertificates", [])}
+          if cert_sha256 not in listed:
+              raise SystemExit("Main provisioning profile does not include the configured signing certificate")
           out_ent = {
               "application-identifier": app_id,
               "com.apple.developer.team-identifier": team_id,
@@ -294,12 +305,20 @@ jobs:
               echo "Expected one app extension, found $APPEX_COUNT; refusing to sign with an ambiguous profile."
               exit 1
             fi
-            python3 - "$SIGN_DIR/tunnel.mobileprovision" "$SIGN_DIR/tunnel-entitlements.plist" "$BUNDLE_ID" <<'PYEOF'
-          import fnmatch, plistlib, sys
-          profile_path, entitlements_path, bundle_id = sys.argv[1:4]
+            python3 - "$SIGN_DIR/tunnel.mobileprovision" "$SIGN_DIR/tunnel-entitlements.plist" "$BUNDLE_ID" "$SIGN_DIR/profile.plist" "$CERT_SHA256" <<'PYEOF'
+          import fnmatch, hashlib, plistlib, sys
+          profile_path, entitlements_path, bundle_id, main_profile_path, cert_sha256 = sys.argv[1:6]
           with open(profile_path, "rb") as f:
               profile = plistlib.load(f)
+          with open(main_profile_path, "rb") as f:
+              main_profile = plistlib.load(f)
           team = (profile.get("TeamIdentifier") or [""])[0]
+          main_team = (main_profile.get("TeamIdentifier") or [""])[0]
+          if not team or team != main_team:
+              raise SystemExit("Tunnel and main app provisioning profiles must use the same Apple team")
+          listed = {hashlib.sha256(bytes(cert)).hexdigest() for cert in profile.get("DeveloperCertificates", [])}
+          if cert_sha256 not in listed:
+              raise SystemExit("Tunnel provisioning profile does not include the configured signing certificate")
           ent = profile.get("Entitlements", {})
           app_id = ent.get("application-identifier", "")
           expected = team + "." + bundle_id + ".tunnel"
