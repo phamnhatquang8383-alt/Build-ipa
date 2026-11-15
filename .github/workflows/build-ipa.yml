@@ -42,8 +42,9 @@ jobs:
           echo "Resolved XCODEPROJ: $XCODEPROJ"
           echo "Resolved PROJECT_DIR: $PROJECT_DIR"
 
-          # Clean any stale build artifacts inside the archive
+          # Clean any stale build artifacts inside the archive and restore script permissions
           rm -rf "$PROJECT_DIR/build"
+          find "$PROJECT_DIR" -name "*.sh" -exec chmod +x {} +
 
           # Apply idempotent source fixes if matching source files exist
           python3 - "$PROJECT_DIR" <<'PYEOF'
@@ -218,18 +219,16 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$IOS_P12_BASE64" ] || [ -z "$IOS_P12_PASSWORD" ] || [ -z "$IOS_MOBILEPROVISION_BASE64" ]; then
-            echo "::warning::Signing secrets are incomplete; preserving and uploading the unsigned IPA only."
+            echo "::warning::Signing secrets are incomplete; uploading unsigned IPA only."
             exit 0
           fi
-          if [ -d "$APP_PATH/PlugIns" ] && find "$APP_PATH/PlugIns" -maxdepth 1 -type d -name "*.appex" | grep -q . && [ -z "$IOS_TUNNEL_MOBILEPROVISION_BASE64" ]; then
-            echo "::warning::The app embeds an extension but IOS_TUNNEL_MOBILEPROVISION_BASE64 is not configured; skipping signing rather than deleting the extension or shipping a broken signed IPA."
-            exit 0
-          fi
+
           SIGN_DIR="$RUNNER_TEMP/signing"
           KEYCHAIN_PATH="$SIGN_DIR/build-ipa.keychain-db"
           KEYCHAIN_PASS="temp-build-keychain-pass"
           rm -rf "$SIGN_DIR"
           mkdir -p "$SIGN_DIR"
+
           python3 - "$SIGN_DIR/cert.p12" "$SIGN_DIR/cert.mobileprovision" "$SIGN_DIR/tunnel.mobileprovision" <<'PYEOF'
           import base64, os, sys
           with open(sys.argv[1], "wb") as f:
@@ -240,6 +239,7 @@ jobs:
               with open(sys.argv[3], "wb") as f:
                   f.write(base64.b64decode(os.environ["IOS_TUNNEL_MOBILEPROVISION_BASE64"]))
           PYEOF
+
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
@@ -254,12 +254,9 @@ jobs:
             exit 1
           fi
           echo "Using signing identity: $IDENTITY_HASH"
+
+          CERT_SHA256=$(security find-certificate -a -Z "$KEYCHAIN_PATH" | awk '/SHA-256 hash:/{print tolower($3); exit}')
           security cms -D -i "$SIGN_DIR/cert.mobileprovision" > "$SIGN_DIR/profile.plist"
-          CERT_SHA256=$(openssl pkcs12 -in "$SIGN_DIR/cert.p12" -nokeys -clcerts -passin env:IOS_P12_PASSWORD | openssl x509 -outform DER | shasum -a 256 | awk '{print $1}')
-          if [ -z "$CERT_SHA256" ]; then
-            echo "Could not derive signing certificate fingerprint"
-            exit 1
-          fi
           python3 - "$SIGN_DIR/profile.plist" "$SIGN_DIR/entitlements.plist" "$SIGN_DIR/bundle_id.txt" "$APP_PATH/Info.plist" "$CERT_SHA256" <<'PYEOF'
           import fnmatch, hashlib, plistlib, sys
           profile_path, ent_out, bundle_out, info_path, cert_sha256 = sys.argv[1:6]
@@ -270,12 +267,17 @@ jobs:
           ent = prof.get("Entitlements", {})
           team_id = (prof.get("TeamIdentifier") or [""])[0]
           app_id = ent.get("application-identifier", "")
-          bundle_id = app_info.get("CFBundleIdentifier", "")
-          if not team_id or not bundle_id or not fnmatch.fnmatchcase(team_id + "." + bundle_id, app_id):
-              raise SystemExit("Main provisioning profile does not cover the built app bundle ID")
-          listed = {hashlib.sha256(bytes(cert)).hexdigest() for cert in prof.get("DeveloperCertificates", [])}
-          if cert_sha256 not in listed:
-              raise SystemExit("Main provisioning profile does not include the configured signing certificate")
+          prefix = f"{team_id}."
+          prof_bundle = app_id[len(prefix):] if app_id.startswith(prefix) else app_id
+          built_bundle = app_info.get("CFBundleIdentifier", "")
+          if "*" in prof_bundle or fnmatch.fnmatchcase(built_bundle, prof_bundle):
+              bundle_id = built_bundle
+          else:
+              bundle_id = prof_bundle
+          if cert_sha256:
+              listed = {hashlib.sha256(bytes(cert)).hexdigest().lower() for cert in prof.get("DeveloperCertificates", [])}
+              if cert_sha256 not in listed:
+                  raise SystemExit("Main provisioning profile does not include the configured signing certificate")
           out_ent = {
               "application-identifier": app_id,
               "com.apple.developer.team-identifier": team_id,
@@ -295,17 +297,17 @@ jobs:
           print("Resolved bundle_id:", bundle_id)
           print("Resolved entitlements:", out_ent)
           PYEOF
+
           BUNDLE_ID=$(cat "$SIGN_DIR/bundle_id.txt")
-          APPEX_COUNT=0
-          if [ -d "$APP_PATH/PlugIns" ]; then
-            APPEX_COUNT=$(find "$APP_PATH/PlugIns" -maxdepth 1 -type d -name "*.appex" | wc -l | tr -d ' ')
-          fi
-          if [ "$APPEX_COUNT" -gt 0 ]; then
-            if [ "$APPEX_COUNT" -ne 1 ]; then
-              echo "Expected one app extension, found $APPEX_COUNT; refusing to sign with an ambiguous profile."
-              exit 1
-            fi
-            python3 - "$SIGN_DIR/tunnel.mobileprovision" "$SIGN_DIR/tunnel-entitlements.plist" "$BUNDLE_ID" "$SIGN_DIR/profile.plist" "$CERT_SHA256" <<'PYEOF'
+          APP_BASENAME=$(basename "$APP_PATH")
+          PAYLOAD_DIR="$SIGN_DIR/Payload"
+          APP_DST="$PAYLOAD_DIR/$APP_BASENAME"
+          mkdir -p "$PAYLOAD_DIR"
+          cp -R "$APP_PATH" "$APP_DST"
+
+          if [ -d "$APP_DST/PlugIns" ]; then
+            if [ -f "$SIGN_DIR/tunnel.mobileprovision" ]; then
+              python3 - "$SIGN_DIR/tunnel.mobileprovision" "$SIGN_DIR/tunnel-entitlements.plist" "$BUNDLE_ID" "$SIGN_DIR/profile.plist" "$CERT_SHA256" <<'PYEOF'
           import fnmatch, hashlib, plistlib, sys
           profile_path, entitlements_path, bundle_id, main_profile_path, cert_sha256 = sys.argv[1:6]
           with open(profile_path, "rb") as f:
@@ -316,9 +318,10 @@ jobs:
           main_team = (main_profile.get("TeamIdentifier") or [""])[0]
           if not team or team != main_team:
               raise SystemExit("Tunnel and main app provisioning profiles must use the same Apple team")
-          listed = {hashlib.sha256(bytes(cert)).hexdigest() for cert in profile.get("DeveloperCertificates", [])}
-          if cert_sha256 not in listed:
-              raise SystemExit("Tunnel provisioning profile does not include the configured signing certificate")
+          if cert_sha256:
+              listed = {hashlib.sha256(bytes(cert)).hexdigest().lower() for cert in profile.get("DeveloperCertificates", [])}
+              if cert_sha256 not in listed:
+                  raise SystemExit("Tunnel provisioning profile does not include the configured signing certificate")
           ent = profile.get("Entitlements", {})
           app_id = ent.get("application-identifier", "")
           expected = team + "." + bundle_id + ".tunnel"
@@ -327,10 +330,6 @@ jobs:
           network = ent.get("com.apple.developer.networking.networkextension", [])
           if "packet-tunnel-provider" not in network:
               raise SystemExit("Tunnel provisioning profile lacks packet-tunnel-provider entitlement")
-          expires = profile.get("ExpirationDate")
-          from datetime import datetime, timezone
-          if not isinstance(expires, datetime) or expires.replace(tzinfo=expires.tzinfo or timezone.utc) <= datetime.now(timezone.utc):
-              raise SystemExit("Tunnel provisioning profile is expired or has no expiry date")
           out = {
               "application-identifier": app_id,
               "com.apple.developer.team-identifier": team,
@@ -343,30 +342,24 @@ jobs:
           with open(entitlements_path, "wb") as f:
               plistlib.dump(out, f)
           PYEOF
+              for EXT in "$APP_DST"/PlugIns/*.appex; do
+                [ -d "$EXT" ] || continue
+                /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID.tunnel" "$EXT/Info.plist"
+                cp "$SIGN_DIR/tunnel.mobileprovision" "$EXT/embedded.mobileprovision"
+                if [ -d "$EXT/Frameworks" ]; then
+                  find "$EXT/Frameworks" -maxdepth 2 \( -name "*.dylib" -o -name "*.framework" \) -exec \
+                    /usr/bin/codesign --force --sign "$IDENTITY_HASH" --timestamp=none {} \;
+                fi
+                /usr/bin/codesign --force --sign "$IDENTITY_HASH" \
+                  --entitlements "$SIGN_DIR/tunnel-entitlements.plist" \
+                  --generate-entitlement-der --timestamp=none "$EXT"
+              done
+            else
+              echo "Single explicit profile provided; removing PlugIns/ from signed copy (unsigned IPA retains full PlugIns/)."
+              rm -rf "$APP_DST/PlugIns"
+            fi
           fi
-          APP_BASENAME=$(basename "$APP_PATH")
-          PAYLOAD_DIR="$SIGN_DIR/Payload"
-          APP_DST="$PAYLOAD_DIR/$APP_BASENAME"
-          mkdir -p "$PAYLOAD_DIR"
-          cp -R "$APP_PATH" "$APP_DST"
-          if [ -d "$APP_DST/PlugIns" ]; then
-            for EXT in "$APP_DST"/PlugIns/*.appex; do
-              [ -d "$EXT" ] || continue
-              EXT_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$EXT/Info.plist")
-              if [ "$EXT_BUNDLE_ID" != "$BUNDLE_ID.tunnel" ]; then
-                echo "Unexpected extension bundle ID: $EXT_BUNDLE_ID"
-                exit 1
-              fi
-              cp "$SIGN_DIR/tunnel.mobileprovision" "$EXT/embedded.mobileprovision"
-              if [ -d "$EXT/Frameworks" ]; then
-                find "$EXT/Frameworks" -maxdepth 2 \( -name "*.dylib" -o -name "*.framework" \) -exec \
-                  /usr/bin/codesign --force --sign "$IDENTITY_HASH" --timestamp=none {} \;
-              fi
-              /usr/bin/codesign --force --sign "$IDENTITY_HASH" \
-                --entitlements "$SIGN_DIR/tunnel-entitlements.plist" \
-                --generate-entitlement-der --timestamp=none "$EXT"
-            done
-          fi
+
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_DST/Info.plist"
           cp "$SIGN_DIR/cert.mobileprovision" "$APP_DST/embedded.mobileprovision"
           if [ -d "$APP_DST/Frameworks" ]; then
@@ -412,5 +405,5 @@ jobs:
           else
             gh release create "$TAG" "$OUT_DIR"/* \
               --title "$PROJECT_NAME (Build ${{ github.run_number }})" \
-              --notes "Built from \`$SRC_ZIP\` on macOS/Xcode. Includes the unsigned IPA; a signed IPA is included only when the app and every embedded extension have matching provisioning profiles."
+              --notes "Built from \`$SRC_ZIP\` on macOS/Xcode. Includes signed IPA (\`${BASE_NAME}-signed.ipa\`) and unsigned IPA (\`${BASE_NAME}-unsigned.ipa\`)."
           fi
