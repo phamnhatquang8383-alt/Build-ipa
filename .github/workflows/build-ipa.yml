@@ -45,6 +45,21 @@ jobs:
           # Clean any stale build artifacts inside the archive
           rm -rf "$PROJECT_DIR/build"
 
+          # Patch missing @State agentMode in ChatLabView if needed
+          python3 - "$PROJECT_DIR/XGPT/ContentView.swift" <<'PYEOF'
+          import os, sys
+          path = sys.argv[1]
+          if os.path.exists(path):
+              src = open(path, "r", encoding="utf-8").read()
+              if "agentMode.toggle()" in src and "var agentMode" not in src:
+                  target = "@State private var attachedName: String?"
+                  replacement = "@State private var attachedName: String?\n    @State private var agentMode = false"
+                  if target in src:
+                      src = src.replace(target, replacement, 1)
+                      open(path, "w", encoding="utf-8").write(src)
+                      print("Patched missing @State agentMode in ContentView.swift")
+          PYEOF
+
           echo "SRC_ZIP=$SRC_ZIP" >> "$GITHUB_ENV"
           echo "WORK_DIR=$WORK_DIR" >> "$GITHUB_ENV"
           echo "OUT_DIR=$OUT_DIR" >> "$GITHUB_ENV"
