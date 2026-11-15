@@ -11,7 +11,6 @@ permissions:
 jobs:
   build-ipa:
     runs-on: macos-15-intel
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -37,6 +36,7 @@ jobs:
             find "$WORK_DIR" -maxdepth 4
             exit 1
           fi
+
           PROJECT_DIR=$(dirname "$XCODEPROJ")
           PROJECT_NAME=$(basename "$XCODEPROJ" .xcodeproj)
           echo "Resolved XCODEPROJ: $XCODEPROJ"
@@ -45,19 +45,64 @@ jobs:
           # Clean any stale build artifacts inside the archive
           rm -rf "$PROJECT_DIR/build"
 
-          # Patch missing @State agentMode in ChatLabView if needed
-          python3 - "$PROJECT_DIR/XGPT/ContentView.swift" <<'PYEOF'
+          # Apply idempotent source fixes if matching source files exist
+          python3 - "$PROJECT_DIR" <<'PYEOF'
           import os, sys
-          path = sys.argv[1]
-          if os.path.exists(path):
-              src = open(path, "r", encoding="utf-8").read()
+
+          project_dir = sys.argv[1]
+
+          # 1. XGPT/ContentView.swift: missing @State agentMode
+          xgpt_cv = os.path.join(project_dir, "XGPT", "ContentView.swift")
+          if os.path.exists(xgpt_cv):
+              src = open(xgpt_cv, "r", encoding="utf-8").read()
               if "agentMode.toggle()" in src and "var agentMode" not in src:
                   target = "@State private var attachedName: String?"
                   replacement = "@State private var attachedName: String?\n    @State private var agentMode = false"
                   if target in src:
                       src = src.replace(target, replacement, 1)
-                      open(path, "w", encoding="utf-8").write(src)
-                      print("Patched missing @State agentMode in ContentView.swift")
+                      open(xgpt_cv, "w", encoding="utf-8").write(src)
+                      print("Patched missing @State agentMode in XGPT/ContentView.swift")
+
+          # 2. CC365-Apps/Audio/AppMusicPlayer.swift: missing import Combine
+          music_player = os.path.join(project_dir, "CC365-Apps", "Audio", "AppMusicPlayer.swift")
+          if os.path.exists(music_player):
+              src = open(music_player, "r", encoding="utf-8").read()
+              if "ObservableObject" in src and "import Combine" not in src:
+                  src = "import Combine\n" + src
+                  open(music_player, "w", encoding="utf-8").write(src)
+                  print("Patched import Combine in AppMusicPlayer.swift")
+
+          # 3. CC365-Apps/Files/AppPatchPlan.swift: add password parameter to stageSource
+          patch_plan = os.path.join(project_dir, "CC365-Apps", "Files", "AppPatchPlan.swift")
+          if os.path.exists(patch_plan):
+              src = open(patch_plan, "r", encoding="utf-8").read()
+              old_sig = "func stageSource(_ selection: URL, expectDirectory: Bool? = nil) async throws -> AppPatchSource {"
+              new_sig = "func stageSource(_ selection: URL, expectDirectory: Bool? = nil, password: String? = nil) async throws -> AppPatchSource {"
+              if old_sig in src:
+                  src = src.replace(old_sig, new_sig, 1)
+                  src = src.replace(
+                      "AppPatchSource.stage(selection, app: boundApp, scope: boundScope,\n                                                  expectDirectory: expectDirectory)",
+                      "AppPatchSource.stage(selection, app: boundApp, scope: boundScope,\n                                                  expectDirectory: expectDirectory, password: password)",
+                      1,
+                  )
+                  src = src.replace(
+                      "AppPatchSource.stage(selection, scope: boundScope, expectDirectory: expectDirectory)",
+                      "AppPatchSource.stage(selection, scope: boundScope, expectDirectory: expectDirectory, password: password)",
+                      1,
+                  )
+                  open(patch_plan, "w", encoding="utf-8").write(src)
+                  print("Patched stageSource password parameter in AppPatchPlan.swift")
+
+          # 4. CC365-Apps/Files/PatchArchiveCrypto.swift: fix overlapping access to derived
+          crypto_file = os.path.join(project_dir, "CC365-Apps", "Files", "PatchArchiveCrypto.swift")
+          if os.path.exists(crypto_file):
+              src = open(crypto_file, "r", encoding="utf-8").read()
+              old_call = "derivedBytes.bindMemory(to: UInt8.self).baseAddress, derived.count)"
+              new_call = "derivedBytes.bindMemory(to: UInt8.self).baseAddress, derivedBytes.count)"
+              if old_call in src:
+                  src = src.replace(old_call, new_call, 1)
+                  open(crypto_file, "w", encoding="utf-8").write(src)
+                  print("Patched overlapping access to derived in PatchArchiveCrypto.swift")
           PYEOF
 
           echo "SRC_ZIP=$SRC_ZIP" >> "$GITHUB_ENV"
@@ -85,20 +130,33 @@ jobs:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
 
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/*.zip') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
       - name: Build iOS app (Release-iphoneos)
         run: |
           cd "$PROJECT_DIR"
           DERIVED_DATA="$RUNNER_TEMP/DerivedData"
           rm -rf "$DERIVED_DATA"
-
           if [ -f "Makefile" ] && grep -q "^build:" Makefile; then
+            if ! command -v cmake >/dev/null 2>&1 && command -v brew >/dev/null 2>&1; then
+              brew install cmake || true
+            fi
             if command -v rustup >/dev/null 2>&1; then
               rustup target add aarch64-apple-ios || true
             fi
             make build
             APP_PATH=$(find "$PROJECT_DIR/build" -maxdepth 6 -name "*.app" -type d | head -n 1 || true)
           else
-            # Detect first scheme if shared schemes exist, otherwise build all/first target
             SCHEME=$(xcodebuild -project "$XCODEPROJ" -list -json 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); s=d.get("project",{}).get("schemes",[]); print(s[0] if s else "")' || true)
             if [ -n "$SCHEME" ]; then
               echo "Building scheme: $SCHEME"
@@ -126,7 +184,6 @@ jobs:
             fi
             APP_PATH=$(find "$DERIVED_DATA/Build/Products/Release-iphoneos" -maxdepth 2 -name "*.app" -type d | head -n 1 || true)
           fi
-
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
             echo "Built .app bundle not found!"
             exit 1
@@ -164,7 +221,6 @@ jobs:
           KEYCHAIN_PASS="temp-build-keychain-pass"
           rm -rf "$SIGN_DIR"
           mkdir -p "$SIGN_DIR"
-
           python3 - "$SIGN_DIR/cert.p12" "$SIGN_DIR/cert.mobileprovision" <<'PYEOF'
           import base64, os, sys
           with open(sys.argv[1], "wb") as f:
@@ -172,16 +228,13 @@ jobs:
           with open(sys.argv[2], "wb") as f:
               f.write(base64.b64decode(os.environ["IOS_MOBILEPROVISION_BASE64"]))
           PYEOF
-
           security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
           security import "$SIGN_DIR/cert.p12" -P "$IOS_P12_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
-
           EXISTING_KEYCHAINS=$(security list-keychains -d user | tr -d '"' | tr '\n' ' ')
           security list-keychains -d user -s "$KEYCHAIN_PATH" $EXISTING_KEYCHAINS
-
           IDENTITY_HASH=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" | awk '/1\)/{print $2; exit}')
           if [ -z "$IDENTITY_HASH" ]; then
             echo "No valid codesigning identity found in cert.p12"
@@ -189,9 +242,7 @@ jobs:
             exit 1
           fi
           echo "Using signing identity: $IDENTITY_HASH"
-
           security cms -D -i "$SIGN_DIR/cert.mobileprovision" > "$SIGN_DIR/profile.plist"
-
           python3 - "$SIGN_DIR/profile.plist" "$SIGN_DIR/entitlements.plist" "$SIGN_DIR/bundle_id.txt" <<'PYEOF'
           import plistlib, sys
           profile_path, ent_out, bundle_out = sys.argv[1:4]
@@ -202,15 +253,18 @@ jobs:
           app_id = ent.get("application-identifier", "")
           prefix = f"{team_id}."
           bundle_id = app_id[len(prefix):] if app_id.startswith(prefix) else app_id
-
           out_ent = {
               "application-identifier": app_id,
               "com.apple.developer.team-identifier": team_id,
               "get-task-allow": bool(ent.get("get-task-allow", False)),
           }
-          if "keychain-access-groups" in ent:
-              out_ent["keychain-access-groups"] = ent["keychain-access-groups"]
-
+          for k in (
+              "keychain-access-groups",
+              "com.apple.developer.networking.networkextension",
+              "com.apple.developer.networking.vpn.api",
+          ):
+              if k in ent:
+                  out_ent[k] = ent[k]
           with open(ent_out, "wb") as f:
               plistlib.dump(out_ent, f)
           with open(bundle_out, "w") as f:
@@ -218,35 +272,28 @@ jobs:
           print("Resolved bundle_id:", bundle_id)
           print("Resolved entitlements:", out_ent)
           PYEOF
-
           BUNDLE_ID=$(cat "$SIGN_DIR/bundle_id.txt")
           APP_BASENAME=$(basename "$APP_PATH")
           PAYLOAD_DIR="$SIGN_DIR/Payload"
           APP_DST="$PAYLOAD_DIR/$APP_BASENAME"
           mkdir -p "$PAYLOAD_DIR"
           cp -R "$APP_PATH" "$APP_DST"
-
           if [ -d "$APP_DST/PlugIns" ]; then
             rm -rf "$APP_DST/PlugIns"
           fi
-
           /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUNDLE_ID" "$APP_DST/Info.plist"
           cp "$SIGN_DIR/cert.mobileprovision" "$APP_DST/embedded.mobileprovision"
-
           if [ -d "$APP_DST/Frameworks" ]; then
             find "$APP_DST/Frameworks" -maxdepth 2 \( -name "*.dylib" -o -name "*.framework" \) -exec \
               /usr/bin/codesign --force --sign "$IDENTITY_HASH" --timestamp=none {} \;
           fi
-
           /usr/bin/codesign --force --sign "$IDENTITY_HASH" \
             --entitlements "$SIGN_DIR/entitlements.plist" \
             --generate-entitlement-der \
             --timestamp=none \
             "$APP_DST"
-
           /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_DST"
           /usr/bin/codesign -d --entitlements :- "$APP_DST"
-
           (
             cd "$SIGN_DIR"
             /usr/bin/zip -qr "$OUT_DIR/${BASE_NAME}-signed.ipa" Payload
