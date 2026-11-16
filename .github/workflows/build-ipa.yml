@@ -108,7 +108,18 @@ jobs:
                   open(app_patch_view, "w", encoding="utf-8").write(patched)
                   print("Patched ContentUnavailableView -> CC365UnavailableView in AppPatchView.swift")
 
-          # 5. CC365-Apps/Files/PatchArchiveCrypto.swift: fix overlapping access to derived
+          # 5. CC365-Apps/Runtime/SEVFeaturePackageManager.swift: pass String .path to fileExists(atPath:)
+          sev_pkg_mgr = os.path.join(project_dir, "CC365-Apps", "Runtime", "SEVFeaturePackageManager.swift")
+          if os.path.exists(sev_pkg_mgr):
+              src = open(sev_pkg_mgr, "r", encoding="utf-8").read()
+              old_call = "fm.fileExists(atPath: archivedActive)"
+              new_call = "fm.fileExists(atPath: archivedActive.path)"
+              if old_call in src:
+                  src = src.replace(old_call, new_call, 1)
+                  open(sev_pkg_mgr, "w", encoding="utf-8").write(src)
+                  print("Patched archivedActive.path in SEVFeaturePackageManager.swift")
+
+          # 6. CC365-Apps/Files/PatchArchiveCrypto.swift: fix overlapping access to derived
           crypto_file = os.path.join(project_dir, "CC365-Apps", "Files", "PatchArchiveCrypto.swift")
           if os.path.exists(crypto_file):
               src = open(crypto_file, "r", encoding="utf-8").read()
